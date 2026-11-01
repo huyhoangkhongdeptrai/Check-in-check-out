@@ -1,7 +1,9 @@
 /**
  * =========================================================================
- * CHẤM CÔNG & KM - ỨNG DỤNG ANDROID / PWA (HỖ TRỢ OFFLINE & AUTO-SYNC)
- * Tự động chuyển tháng mới, lưu trữ cả năm, tự động đồng bộ Google Sheets khi có mạng
+ * CHẤM CÔNG & KM - ỨNG DỤNG ANDROID / PWA (HỖ TRỢ OFFLINE & AUTO-SYNC 2 CHIỀU)
+ * Đồng bộ 2 chiều thời gian thực giữa App và Google Sheets:
+ * - Khi sửa trên Sheet -> App tự động cập nhật ngay lập tức.
+ * - Khi chụp / sửa trên App -> Google Sheets cập nhật ngay lập tức.
  * =========================================================================
  */
 
@@ -21,10 +23,12 @@ const AppState = {
   scriptUrl: localStorage.getItem('chamcong_sheet_api_url') || '',
   monthData: {},
   offlineQueue: JSON.parse(localStorage.getItem('chamcong_offline_queue') || '[]'),
-  isSyncing: false
+  isSyncing: false,
+  isFetchingLive: false,
+  lastSyncTimestamp: 0
 };
 
-// --- Sample Data (Từ file ví dụ người dùng cung cấp) ---
+// --- Sample Data ---
 const USER_SAMPLE_DATA = {
   7:  { checkIn: '13:36:00', checkOut: '21:42:00', kmIn: 37365, kmOut: 37391 },
   8:  { checkIn: '11:47:00', checkOut: '21:50:00', kmIn: 37414, kmOut: 37452 },
@@ -135,7 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderAnnualSummaryTable();
   updateSyncStatusUI();
 
-  // Đăng ký Service Worker cho PWA Android
+  // Đăng ký Service Worker cho PWA Android & iOS
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js')
       .then(() => console.log('PWA Service Worker đã sẵn sàng'))
@@ -147,9 +151,13 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.sheetApiUrl.value = AppState.scriptUrl;
   }
 
-  // Nếu mở app mà có mạng và có hàng chờ offline -> tự động đồng bộ ngay
-  if (navigator.onLine && AppState.offlineQueue.length > 0) {
-    processOfflineSyncQueue();
+  // Nếu mở app mà có mạng -> đồng bộ hàng chờ và kéo dữ liệu mới nhất từ Sheet về ngay
+  if (navigator.onLine && AppState.scriptUrl) {
+    if (AppState.offlineQueue.length > 0) {
+      processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
+    } else {
+      fetchLiveDataFromSheets(true);
+    }
   }
 });
 
@@ -219,21 +227,43 @@ function saveMonthData() {
 function setupNetworkSyncListeners() {
   window.addEventListener('online', () => {
     updateSyncStatusUI();
-    showToast('📶 Đã có kết nối mạng! Đang tự động tải dữ liệu lên Google Sheets...', 'info');
-    processOfflineSyncQueue();
+    showToast('📶 Đã có kết nối mạng! Đang tự động đồng bộ...', 'info');
+    processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
   });
 
   window.addEventListener('offline', () => {
     updateSyncStatusUI();
-    showToast('📵 Mất kết nối mạng. Ứng dụng đã chuyển sang chế độ Offline (ảnh và dữ liệu lưu an toàn trên máy).', 'info');
+    showToast('📵 Mất kết nối mạng. Ứng dụng chuyển sang chế độ Ngoại tuyến (Offline).', 'info');
   });
 
-  // Tự động thử lại mỗi 25 giây nếu còn hàng chờ và đang online
+  // TỰ ĐỘNG ĐỒNG BỘ 2 CHIỀU ĐỊNH KỲ (Mỗi 10 giây một lần khi app đang mở)
   setInterval(() => {
-    if (navigator.onLine && AppState.offlineQueue.length > 0 && !AppState.isSyncing) {
+    if (!navigator.onLine || !AppState.scriptUrl) return;
+
+    // 1. Nếu có hàng chờ offline -> đẩy lên Sheets trước
+    if (AppState.offlineQueue.length > 0 && !AppState.isSyncing) {
       processOfflineSyncQueue();
+      return;
     }
-  }, 25000);
+
+    // 2. Nếu tab đang mở -> kéo dữ liệu mới nhất từ Sheets về (nếu có sửa trên Sheet)
+    if (document.visibilityState === 'visible' && !AppState.isSyncing && !AppState.isFetchingLive) {
+      fetchLiveDataFromSheets(true);
+    }
+  }, 10000);
+
+  // Kéo dữ liệu ngay khi người dùng chuyển tab hoặc quay lại app
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && navigator.onLine && AppState.scriptUrl) {
+      fetchLiveDataFromSheets(true);
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (navigator.onLine && AppState.scriptUrl) {
+      fetchLiveDataFromSheets(true);
+    }
+  });
 }
 
 function enqueueOfflineRecord(record) {
@@ -246,7 +276,7 @@ function updateSyncStatusUI() {
   const isOnline = navigator.onLine;
   const queueLen = AppState.offlineQueue.length;
 
-  if (AppState.isSyncing) {
+  if (AppState.isSyncing || AppState.isFetchingLive) {
     elements.btnSyncQueue.className = 'sync-status-pill syncing';
     elements.syncStatusText.textContent = 'Đang đồng bộ...';
     elements.syncQueueBadge.style.display = 'none';
@@ -261,7 +291,7 @@ function updateSyncStatusUI() {
   } else {
     if (queueLen > 0) {
       elements.btnSyncQueue.className = 'sync-status-pill offline';
-      elements.syncStatusText.textContent = 'Chờ đồng bộ';
+      elements.syncStatusText.textContent = 'Chờ tải lên';
       elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#f59e0b"></span> Có bản ghi chờ';
     } else {
       elements.btnSyncQueue.className = 'sync-status-pill online';
@@ -278,6 +308,7 @@ function updateSyncStatusUI() {
   }
 }
 
+// --- Đồng Bộ Hàng Chờ Lên Google Sheets ---
 async function processOfflineSyncQueue() {
   if (!AppState.scriptUrl) {
     updateSyncStatusUI();
@@ -306,15 +337,101 @@ async function processOfflineSyncQueue() {
 
     const result = await response.json();
     if (result && result.status === 'success') {
-      // Đã đồng bộ thành công -> xóa các item đã gửi khỏi queue
       AppState.offlineQueue = AppState.offlineQueue.filter(item => !itemsToSend.some(sent => sent.id === item.id));
       localStorage.setItem('chamcong_offline_queue', JSON.stringify(AppState.offlineQueue));
+      
+      // Nếu có trả về dữ liệu mới nhất của tháng
+      if (result.data && result.year === AppState.selectedYear && result.month === AppState.selectedMonth) {
+        AppState.monthData = result.data;
+        saveMonthData();
+      }
+
       showToast(`☁️ Đã tự động đồng bộ ${itemsToSend.length} bản ghi lên Google Sheets!`, 'success');
     }
   } catch (err) {
-    console.warn('Đồng bộ thất bại, sẽ tự động thử lại khi có mạng ổn định:', err);
+    console.warn('Đồng bộ hàng chờ thất bại, sẽ tự động thử lại:', err);
   } finally {
     AppState.isSyncing = false;
+    updateSyncStatusUI();
+  }
+}
+
+// --- KÉO DỮ LIỆU MỚI NHẤT TỪ GOOGLE SHEETS VỀ APP (ĐỒNG BỘ 2 CHIỀU) ---
+async function fetchLiveDataFromSheets(isSilent = false, year = AppState.selectedYear, month = AppState.selectedMonth) {
+  if (!AppState.scriptUrl || !navigator.onLine || AppState.isFetchingLive) {
+    return;
+  }
+
+  AppState.isFetchingLive = true;
+  if (!isSilent) {
+    elements.btnSyncOnline.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Đang tải...';
+  }
+
+  try {
+    const payload = {
+      action: 'get_data',
+      year: year,
+      month: month
+    };
+
+    const res = await fetch(AppState.scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await res.json();
+    if (result && result.status === 'success' && result.data) {
+      const remoteData = result.data;
+
+      if (year === AppState.selectedYear && month === AppState.selectedMonth) {
+        const localStr = JSON.stringify(AppState.monthData);
+        const remoteStr = JSON.stringify(remoteData);
+
+        // Nếu có sự thay đổi giữa Sheet và App
+        if (localStr !== remoteStr) {
+          // Bảo vệ các bản ghi offline chưa gửi
+          const pendingDays = new Set(
+            AppState.offlineQueue
+              .filter(item => item.year === year && item.month === month)
+              .map(item => item.day)
+          );
+
+          const updated = { ...remoteData };
+          pendingDays.forEach(d => {
+            if (AppState.monthData[d]) {
+              updated[d] = AppState.monthData[d];
+            }
+          });
+
+          AppState.monthData = updated;
+          saveMonthData();
+
+          if (!isSilent) {
+            showToast(`✅ Đã đồng bộ mới nhất từ Google Sheets!`, 'success');
+          } else {
+            console.log('🔄 Đã tự động cập nhật thay đổi từ Google Sheets!');
+          }
+        } else if (!isSilent) {
+          showToast(`🟢 Dữ liệu trên App và Google Sheets đã khớp 100%!`, 'success');
+        }
+      } else {
+        // Lưu dữ liệu của tháng khác vào bộ nhớ
+        const storageKey = getStorageKey(year, month);
+        localStorage.setItem(storageKey, JSON.stringify(remoteData));
+        renderAnnualSummaryTable();
+      }
+    }
+  } catch (err) {
+    console.warn('Lỗi lấy dữ liệu từ Sheets:', err);
+    if (!isSilent) {
+      showToast('⚠️ Không thể tải từ Google Sheets. Kiểm tra URL hoặc mạng!', 'error');
+    }
+  } finally {
+    AppState.isFetchingLive = false;
+    if (!isSilent) {
+      elements.btnSyncOnline.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i> Đồng bộ ngay';
+    }
     updateSyncStatusUI();
   }
 }
@@ -326,26 +443,25 @@ function updateTodayShiftStatus() {
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
 
-  // Chỉ phản ánh trạng thái hôm nay khi người dùng đang xem tháng và năm hiện tại
   if (AppState.selectedMonth !== currentMonth || AppState.selectedYear !== currentYear) {
     return;
   }
 
   const record = AppState.monthData[today] || {};
   elements.todayCheckInTime.textContent = record.checkIn || '--:--:--';
-  elements.todayKmIn.textContent = record.kmIn ? `Km: ${record.kmIn.toLocaleString()}` : 'Km: ---';
+  elements.todayKmIn.textContent = record.kmIn ? `Km: ${Number(record.kmIn).toLocaleString()}` : 'Km: ---';
   elements.todayCheckOutTime.textContent = record.checkOut || '--:--:--';
-  elements.todayKmOut.textContent = record.kmOut ? `Km: ${record.kmOut.toLocaleString()}` : 'Km: ---';
+  elements.todayKmOut.textContent = record.kmOut ? `Km: ${Number(record.kmOut).toLocaleString()}` : 'Km: ---';
 
-  // Tự động chọn Vào ca hoặc Tan ca thông minh
+  // Tự động gợi ý Vào ca hoặc Tan ca
   if (!record.checkIn) {
     elements.modeRadioIn.checked = true;
     elements.btnCaptureLabel.textContent = 'Chụp Check-in Giờ Vào';
-    elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in. Bấm nút để chụp giờ vào ca & số Km đầu.`;
+    elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in. Bấm nút để chụp giờ vào ca & Km đầu.`;
   } else if (record.checkIn && !record.checkOut) {
     elements.modeRadioOut.checked = true;
     elements.btnCaptureLabel.textContent = 'Chụp Check-out Tan Ca';
-    elements.actionIndicatorText.textContent = `Đã vào ca lúc ${record.checkIn} (Km: ${record.kmIn || '---'}). Bấm nút để chụp Tan ca & số Km sau.`;
+    elements.actionIndicatorText.textContent = `Đã vào ca lúc ${record.checkIn} (Km: ${record.kmIn ? Number(record.kmIn).toLocaleString() : '---'}). Bấm nút để chụp Tan ca & Km sau.`;
   } else {
     elements.modeRadioOut.checked = true;
     elements.btnCaptureLabel.textContent = 'Chụp Cập Nhật Lại';
@@ -531,7 +647,7 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
     const todayRecord = AppState.monthData[day];
     if (todayRecord && todayRecord.kmIn) {
       elements.modalPrevKmRow.style.display = 'flex';
-      elements.modalPrevKmVal.textContent = `${todayRecord.kmIn.toLocaleString()} km (lúc ${todayRecord.checkIn || '--'})`;
+      elements.modalPrevKmVal.textContent = `${Number(todayRecord.kmIn).toLocaleString()} km (lúc ${todayRecord.checkIn || '--'})`;
     } else {
       elements.modalPrevKmRow.style.display = 'none';
     }
@@ -641,7 +757,7 @@ async function handleConfirmAndSave() {
 
   if (navigator.onLine && AppState.scriptUrl) {
     showToast('Đang tải lên Google Sheets...', 'info');
-    processOfflineSyncQueue();
+    processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
   } else {
     showToast('💾 Đã lưu ảnh vào máy & ghi nhận Offline (sẽ tự động lên Sheets khi có mạng)!', 'success');
   }
@@ -843,21 +959,24 @@ window.jumpToMonth = function(m) {
   loadMonthData();
   renderTimesheetTable();
   switchTab('tab-timesheet');
+  if (navigator.onLine && AppState.scriptUrl) {
+    fetchLiveDataFromSheets(true);
+  }
 };
 
-// --- Edit Row Modal ---
+// --- Edit Row Modal (Đồng Bộ Ngay Khi Sửa Bảng Trên App) ---
 window.openEditModal = function(day) {
   const record = AppState.monthData[day] || {};
   elements.editDayInput.value = day;
   elements.editModalTitle.textContent = `Chỉnh Sửa Dữ Liệu Ngày ${day}/${AppState.selectedMonth}`;
   elements.editCheckIn.value = record.checkIn || '';
   elements.editCheckOut.value = record.checkOut || '';
-  elements.editKmIn.value = record.kmIn !== undefined && record.kmIn !== null ? record.kmIn : '';
-  elements.editKmOut.value = record.kmOut !== undefined && record.kmOut !== null ? record.kmOut : '';
+  elements.editKmIn.value = (record.kmIn !== undefined && record.kmIn !== null) ? record.kmIn : '';
+  elements.editKmOut.value = (record.kmOut !== undefined && record.kmOut !== null) ? record.kmOut : '';
   elements.editModal.classList.add('show');
 };
 
-function saveEditRow() {
+async function saveEditRow() {
   const day = parseInt(elements.editDayInput.value, 10);
   if (!day) return;
 
@@ -875,36 +994,62 @@ function saveEditRow() {
 
   saveMonthData();
   elements.editModal.classList.remove('show');
-  showToast(`✅ Đã cập nhật ngày ${day}`, 'success');
 
-  // Enqueue sync item
-  if (checkIn && kmIn !== null) {
-    enqueueOfflineRecord({
-      id: 'edit_in_' + Date.now(),
-      year: AppState.selectedYear,
-      month: AppState.selectedMonth,
-      day: day,
-      type: 'in',
-      time: checkIn,
-      km: kmIn,
-      timestamp: Date.now()
-    });
-  }
-  if (checkOut && kmOut !== null) {
-    enqueueOfflineRecord({
-      id: 'edit_out_' + Date.now(),
-      year: AppState.selectedYear,
-      month: AppState.selectedMonth,
-      day: day,
-      type: 'out',
-      time: checkOut,
-      km: kmOut,
-      timestamp: Date.now()
-    });
-  }
+  const rowUpdateItem = {
+    id: 'row_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+    year: AppState.selectedYear,
+    month: AppState.selectedMonth,
+    day: day,
+    type: 'row',
+    checkIn: checkIn,
+    checkOut: checkOut,
+    kmIn: kmIn,
+    kmOut: kmOut,
+    timestamp: Date.now()
+  };
 
-  if (navigator.onLine) {
-    processOfflineSyncQueue();
+  // Nếu có mạng: Gửi thẳng lên Google Sheets ngay lập tức
+  if (navigator.onLine && AppState.scriptUrl) {
+    showToast(`🔄 Đang cập nhật ngày ${day} lên Google Sheets...`, 'info');
+    try {
+      AppState.isSyncing = true;
+      updateSyncStatusUI();
+
+      const res = await fetch(AppState.scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'update_row',
+          year: AppState.selectedYear,
+          month: AppState.selectedMonth,
+          day: day,
+          checkIn: checkIn,
+          checkOut: checkOut,
+          kmIn: kmIn,
+          kmOut: kmOut
+        })
+      });
+
+      const result = await res.json();
+      if (result && result.status === 'success' && result.data) {
+        AppState.monthData = result.data;
+        saveMonthData();
+        showToast(`✅ Google Sheets đã cập nhật ngày ${day}!`, 'success');
+      } else {
+        enqueueOfflineRecord(rowUpdateItem);
+        showToast(`⚠️ Đã lưu trên máy (sẽ tự động lên Sheets khi mạng ổn định)`, 'info');
+      }
+    } catch (err) {
+      enqueueOfflineRecord(rowUpdateItem);
+      showToast(`⚠️ Không kết nối được Sheets, đã lưu hàng chờ đồng bộ`, 'info');
+    } finally {
+      AppState.isSyncing = false;
+      updateSyncStatusUI();
+    }
+  } else {
+    // Ngoại tuyến: Lưu vào hàng chờ
+    enqueueOfflineRecord(rowUpdateItem);
+    showToast(`💾 Đã lưu thay đổi (sẽ tự động lên Google Sheets khi có mạng)!`, 'success');
   }
 }
 
@@ -1031,6 +1176,9 @@ function setupEventListeners() {
     }
     loadMonthData();
     renderTimesheetTable();
+    if (navigator.onLine && AppState.scriptUrl) {
+      fetchLiveDataFromSheets(true);
+    }
   });
 
   elements.btnNextMonth.addEventListener('click', () => {
@@ -1043,6 +1191,9 @@ function setupEventListeners() {
     }
     loadMonthData();
     renderTimesheetTable();
+    if (navigator.onLine && AppState.scriptUrl) {
+      fetchLiveDataFromSheets(true);
+    }
   });
 
   // Month select dropdown
@@ -1050,6 +1201,9 @@ function setupEventListeners() {
     AppState.selectedMonth = parseInt(e.target.value, 10);
     loadMonthData();
     renderTimesheetTable();
+    if (navigator.onLine && AppState.scriptUrl) {
+      fetchLiveDataFromSheets(true);
+    }
   });
 
   // Year Navigation (Tab 3)
@@ -1071,27 +1225,41 @@ function setupEventListeners() {
 
   // Timesheet actions
   elements.btnExportExcel.addEventListener('click', exportToCsv);
-  elements.btnSyncOnline.addEventListener('click', () => {
+  
+  // Nút "Đồng bộ ngay" trên thanh công cụ Bảng Chấm Công
+  elements.btnSyncOnline.addEventListener('click', async () => {
     if (!AppState.scriptUrl) {
       elements.settingsModal.classList.add('show');
       showToast('⚠️ Vui lòng cấu hình URL Google Sheets trước', 'error');
-    } else {
-      showToast('🔄 Đang đồng bộ toàn bộ dữ liệu tháng lên Google Sheets...', 'info');
-      syncWholeMonthDirectly();
-    }
-  });
-
-  // Bấm vào nút trạng thái đồng bộ trên Header
-  elements.btnSyncQueue.addEventListener('click', () => {
-    if (!navigator.onLine) {
-      showToast(`📵 Đang ngoại tuyến. Có ${AppState.offlineQueue.length} bản ghi chờ có mạng để tự tải lên.`, 'info');
       return;
     }
-    if (AppState.offlineQueue.length > 0) {
-      processOfflineSyncQueue();
-    } else {
-      showToast('🟢 Tất cả dữ liệu đã được đồng bộ lên Google Sheets!', 'success');
+    if (!navigator.onLine) {
+      showToast('📵 Đang ngoại tuyến', 'error');
+      return;
     }
+    showToast('🔄 Đang kiểm tra & đồng bộ 2 chiều với Google Sheets...', 'info');
+    if (AppState.offlineQueue.length > 0) {
+      await processOfflineSyncQueue();
+    }
+    await fetchLiveDataFromSheets(false);
+  });
+
+  // Nút trạng thái đồng bộ trên Header
+  elements.btnSyncQueue.addEventListener('click', async () => {
+    if (!AppState.scriptUrl) {
+      elements.settingsModal.classList.add('show');
+      showToast('⚠️ Vui lòng cấu hình URL Google Sheets trước', 'error');
+      return;
+    }
+    if (!navigator.onLine) {
+      showToast(`📵 Ngoại tuyến. Có ${AppState.offlineQueue.length} bản ghi chờ có mạng để tự tải lên.`, 'info');
+      return;
+    }
+    showToast('🔄 Đang đồng bộ 2 chiều...', 'info');
+    if (AppState.offlineQueue.length > 0) {
+      await processOfflineSyncQueue();
+    }
+    await fetchLiveDataFromSheets(false);
   });
 
   // Load sample data button
@@ -1125,7 +1293,9 @@ function setupEventListeners() {
     elements.settingsModal.classList.remove('show');
     showToast('💾 Đã lưu cấu hình Google Sheets Online!', 'success');
     if (AppState.offlineQueue.length > 0 && navigator.onLine) {
-      processOfflineSyncQueue();
+      processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
+    } else if (navigator.onLine) {
+      fetchLiveDataFromSheets(true);
     }
   });
 
@@ -1160,8 +1330,10 @@ function setupEventListeners() {
 
 // --- Bulk Sync Whole Month to Sheets ---
 async function syncWholeMonthDirectly() {
-  if (!AppState.scriptUrl) return;
+  if (!AppState.scriptUrl || !navigator.onLine) return;
   try {
+    AppState.isSyncing = true;
+    updateSyncStatusUI();
     const payload = {
       action: 'sync_month',
       year: AppState.selectedYear,
@@ -1174,10 +1346,17 @@ async function syncWholeMonthDirectly() {
       body: JSON.stringify(payload)
     });
     const result = await res.json();
-    if (result.status === 'success') {
+    if (result && result.status === 'success') {
+      if (result.data) {
+        AppState.monthData = result.data;
+        saveMonthData();
+      }
       showToast(`✅ Đã đồng bộ toàn bộ tháng ${AppState.selectedMonth}/${AppState.selectedYear} lên Google Sheets!`, 'success');
     }
   } catch (err) {
     showToast('⚠️ Lỗi khi đồng bộ toàn bộ tháng.', 'error');
+  } finally {
+    AppState.isSyncing = false;
+    updateSyncStatusUI();
   }
 }

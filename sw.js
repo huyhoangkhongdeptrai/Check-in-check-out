@@ -1,5 +1,5 @@
-// Service Worker cho Ứng dụng Chấm Công & Km (Phiên bản v2 - Cập nhật 31 ngày)
-const CACHE_NAME = 'chamcong-km-v2';
+// Service Worker cho Ứng dụng Chấm Công & Km (Phiên bản v3 - Đồng Bộ 2 Chiều Realtime)
+const CACHE_NAME = 'chamcong-km-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -30,7 +30,7 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Bỏ qua các yêu cầu đến Google Apps Script (luôn đi qua mạng)
+  // Bỏ qua các yêu cầu đến Google Apps Script (luôn đi qua mạng trực tiếp)
   if (event.request.url.includes('script.google.com')) {
     return;
   }
