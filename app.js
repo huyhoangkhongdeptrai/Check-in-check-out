@@ -1,9 +1,7 @@
 /**
  * =========================================================================
  * CHẤM CÔNG & KM - ỨNG DỤNG ANDROID / PWA (HỖ TRỢ OFFLINE & AUTO-SYNC 2 CHIỀU)
- * Đồng bộ 2 chiều thời gian thực giữa App và Google Sheets:
- * - Khi sửa trên Sheet -> App tự động cập nhật ngay lập tức.
- * - Khi chụp / sửa trên App -> Google Sheets cập nhật ngay lập tức.
+ * Đồng bộ 2 chiều thời gian thực - BẢO VỆ DỮ LIỆU TUYỆT ĐỐI (KHÔNG BAO GIỜ XÓA ĐÈ)
  * =========================================================================
  */
 
@@ -25,7 +23,11 @@ const AppState = {
   offlineQueue: JSON.parse(localStorage.getItem('chamcong_offline_queue') || '[]'),
   isSyncing: false,
   isFetchingLive: false,
-  lastSyncTimestamp: 0
+  lastSyncTimestamp: 0,
+  // --- Vị trí GPS (hỗ trợ offline) ---
+  lastKnownAddress: localStorage.getItem('chamcong_last_address') || '',
+  lastKnownCoords: JSON.parse(localStorage.getItem('chamcong_last_coords') || 'null'),
+  isGettingLocation: false
 };
 
 // --- Sample Data ---
@@ -139,19 +141,19 @@ document.addEventListener('DOMContentLoaded', () => {
   renderAnnualSummaryTable();
   updateSyncStatusUI();
 
-  // Đăng ký Service Worker cho PWA Android & iOS
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js')
       .then(() => console.log('PWA Service Worker đã sẵn sàng'))
       .catch((err) => console.log('Lỗi Service Worker:', err));
   }
 
-  // Load URL Google Sheets đã lưu
   if (AppState.scriptUrl) {
     elements.sheetApiUrl.value = AppState.scriptUrl;
   }
 
-  // Nếu mở app mà có mạng -> đồng bộ hàng chờ và kéo dữ liệu mới nhất từ Sheet về ngay
+  // Khởi động theo dõi vị trí GPS ngay khi mở app
+  initGeolocation();
+
   if (navigator.onLine && AppState.scriptUrl) {
     if (AppState.offlineQueue.length > 0) {
       processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
@@ -160,6 +162,71 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 });
+
+// --- Geolocation & Reverse Geocoding (hỗ trợ Offline) ---
+function initGeolocation() {
+  if (!navigator.geolocation) {
+    console.warn('Trình duyệt không hỗ trợ GPS');
+    return;
+  }
+  // Lấy vị trí ngay khi mở app, cache lại để dùng offline
+  updateCurrentLocation();
+  // Cập nhật vị trí mỗi 60 giây khi có mạng
+  setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      updateCurrentLocation();
+    }
+  }, 60000);
+}
+
+function updateCurrentLocation() {
+  if (AppState.isGettingLocation) return;
+  AppState.isGettingLocation = true;
+
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      AppState.lastKnownCoords = coords;
+      localStorage.setItem('chamcong_last_coords', JSON.stringify(coords));
+
+      // Thử reverse geocode nếu có mạng
+      if (navigator.onLine) {
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${coords.lat}&lon=${coords.lon}&format=json&accept-language=vi&zoom=18`,
+            { signal: AbortSignal.timeout(6000) }
+          );
+          const data = await res.json();
+          if (data && data.display_name) {
+            // Lấy phần ngắn gọn: road, suburb, city
+            const a = data.address || {};
+            const parts = [a.road, a.suburb || a.quarter || a.neighbourhood, a.city || a.town || a.village || a.county].filter(Boolean);
+            AppState.lastKnownAddress = parts.length > 0 ? parts.join(', ') : data.display_name.split(',').slice(0, 3).join(',');
+            localStorage.setItem('chamcong_last_address', AppState.lastKnownAddress);
+          }
+        } catch (e) {
+          console.warn('Reverse geocode lỗi (dùng cache):', e);
+        }
+      }
+      AppState.isGettingLocation = false;
+    },
+    (err) => {
+      console.warn('GPS lỗi:', err.message);
+      AppState.isGettingLocation = false;
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+  );
+}
+
+function getCurrentLocationString() {
+  if (AppState.lastKnownAddress) {
+    return '📍 ' + AppState.lastKnownAddress;
+  }
+  if (AppState.lastKnownCoords) {
+    return `📍 GPS: ${AppState.lastKnownCoords.lat.toFixed(5)}, ${AppState.lastKnownCoords.lon.toFixed(5)}`;
+  }
+  return '';
+}
 
 // --- Live Clock & Date ---
 function initLiveClock() {
@@ -223,6 +290,50 @@ function saveMonthData() {
   renderAnnualSummaryTable();
 }
 
+// --- HÀM HỢP NHẤT DỮ LIỆU AN TOÀN (BẢO VỆ DỮ LIỆU TUYỆT ĐỐI) ---
+function mergeRemoteData(remoteData) {
+  if (!remoteData || typeof remoteData !== 'object') return;
+
+  const remoteKeys = Object.keys(remoteData);
+  const localKeys = Object.keys(AppState.monthData);
+
+  // Nếu Sheets rỗng mà trên App đang có dữ liệu -> KHÔNG ĐƯỢC XÓA APP, mà tự động đẩy lên Sheets!
+  if (remoteKeys.length === 0 && localKeys.length > 0) {
+    console.log('Google Sheets chưa có dữ liệu, giữ nguyên App và tự động đẩy lên Sheets.');
+    if (navigator.onLine && AppState.scriptUrl && !AppState.isSyncing) {
+      syncWholeMonthDirectly();
+    }
+    return;
+  }
+
+  let hasChanged = false;
+
+  for (let d = 1; d <= 31; d++) {
+    const remoteRec = remoteData[d];
+    const localRec = AppState.monthData[d];
+
+    if (remoteRec && (remoteRec.checkIn || remoteRec.checkOut || (remoteRec.kmIn !== null && remoteRec.kmIn !== '') || (remoteRec.kmOut !== null && remoteRec.kmOut !== ''))) {
+      const freshRec = {
+        checkIn: remoteRec.checkIn || '',
+        checkOut: remoteRec.checkOut || '',
+        kmIn: (remoteRec.kmIn !== undefined && remoteRec.kmIn !== null && remoteRec.kmIn !== '') ? remoteRec.kmIn : null,
+        kmOut: (remoteRec.kmOut !== undefined && remoteRec.kmOut !== null && remoteRec.kmOut !== '') ? remoteRec.kmOut : null
+      };
+
+      if (!localRec || JSON.stringify(localRec) !== JSON.stringify(freshRec)) {
+        AppState.monthData[d] = freshRec;
+        hasChanged = true;
+      }
+    }
+    // Nếu trên Sheets chưa có ngày d nhưng trên App ĐANG CÓ dữ liệu:
+    // GIỮ NGUYÊN localRec, TUYỆT ĐỐI KHÔNG XÓA MẤT CỦA NGƯỜI DÙNG!
+  }
+
+  if (hasChanged) {
+    saveMonthData();
+  }
+}
+
 // --- Offline Queue & Network Auto-Sync ---
 function setupNetworkSyncListeners() {
   window.addEventListener('online', () => {
@@ -236,30 +347,35 @@ function setupNetworkSyncListeners() {
     showToast('📵 Mất kết nối mạng. Ứng dụng chuyển sang chế độ Ngoại tuyến (Offline).', 'info');
   });
 
-  // TỰ ĐỘNG ĐỒNG BỘ 2 CHIỀU ĐỊNH KỲ (Mỗi 10 giây một lần khi app đang mở)
+  // TỰ ĐỘNG ĐỒNG BỘ 2 CHIỀU ĐỊNH KỲ (Mỗi 12 giây một lần)
   setInterval(() => {
+    // Nếu người dùng đang mở hộp thoại nhập/chỉnh sửa -> TẠM DỪNG đồng bộ ngầm để không giật màn hình
+    if (elements.confirmModal.classList.contains('show') || elements.editModal.classList.contains('show')) {
+      return;
+    }
+
     if (!navigator.onLine || !AppState.scriptUrl) return;
 
-    // 1. Nếu có hàng chờ offline -> đẩy lên Sheets trước
     if (AppState.offlineQueue.length > 0 && !AppState.isSyncing) {
       processOfflineSyncQueue();
       return;
     }
 
-    // 2. Nếu tab đang mở -> kéo dữ liệu mới nhất từ Sheets về (nếu có sửa trên Sheet)
     if (document.visibilityState === 'visible' && !AppState.isSyncing && !AppState.isFetchingLive) {
       fetchLiveDataFromSheets(true);
     }
-  }, 10000);
+  }, 12000);
 
-  // Kéo dữ liệu ngay khi người dùng chuyển tab hoặc quay lại app
+  // Kéo dữ liệu khi người dùng quay lại app (chỉ khi không mở modal)
   document.addEventListener('visibilitychange', () => {
+    if (elements.confirmModal.classList.contains('show') || elements.editModal.classList.contains('show')) return;
     if (document.visibilityState === 'visible' && navigator.onLine && AppState.scriptUrl) {
       fetchLiveDataFromSheets(true);
     }
   });
 
   window.addEventListener('focus', () => {
+    if (elements.confirmModal.classList.contains('show') || elements.editModal.classList.contains('show')) return;
     if (navigator.onLine && AppState.scriptUrl) {
       fetchLiveDataFromSheets(true);
     }
@@ -340,13 +456,11 @@ async function processOfflineSyncQueue() {
       AppState.offlineQueue = AppState.offlineQueue.filter(item => !itemsToSend.some(sent => sent.id === item.id));
       localStorage.setItem('chamcong_offline_queue', JSON.stringify(AppState.offlineQueue));
       
-      // Nếu có trả về dữ liệu mới nhất của tháng
       if (result.data && result.year === AppState.selectedYear && result.month === AppState.selectedMonth) {
-        AppState.monthData = result.data;
-        saveMonthData();
+        mergeRemoteData(result.data);
       }
 
-      showToast(`☁️ Đã tự động đồng bộ ${itemsToSend.length} bản ghi lên Google Sheets!`, 'success');
+      showToast(`☁️ Đã đồng bộ ${itemsToSend.length} bản ghi lên Google Sheets!`, 'success');
     }
   } catch (err) {
     console.warn('Đồng bộ hàng chờ thất bại, sẽ tự động thử lại:', err);
@@ -356,8 +470,13 @@ async function processOfflineSyncQueue() {
   }
 }
 
-// --- KÉO DỮ LIỆU MỚI NHẤT TỪ GOOGLE SHEETS VỀ APP (ĐỒNG BỘ 2 CHIỀU) ---
+// --- KÉO DỮ LIỆU TỪ SHEETS VỀ APP (KHÔNG BAO GIỜ XÓA ĐÈ) ---
 async function fetchLiveDataFromSheets(isSilent = false, year = AppState.selectedYear, month = AppState.selectedMonth) {
+  // Đang mở hộp thoại nhập liệu -> dừng ngay
+  if (elements.confirmModal.classList.contains('show') || elements.editModal.classList.contains('show')) {
+    return;
+  }
+
   if (!AppState.scriptUrl || !navigator.onLine || AppState.isFetchingLive) {
     return;
   }
@@ -382,43 +501,14 @@ async function fetchLiveDataFromSheets(isSilent = false, year = AppState.selecte
 
     const result = await res.json();
     if (result && result.status === 'success' && result.data) {
-      const remoteData = result.data;
-
       if (year === AppState.selectedYear && month === AppState.selectedMonth) {
-        const localStr = JSON.stringify(AppState.monthData);
-        const remoteStr = JSON.stringify(remoteData);
-
-        // Nếu có sự thay đổi giữa Sheet và App
-        if (localStr !== remoteStr) {
-          // Bảo vệ các bản ghi offline chưa gửi
-          const pendingDays = new Set(
-            AppState.offlineQueue
-              .filter(item => item.year === year && item.month === month)
-              .map(item => item.day)
-          );
-
-          const updated = { ...remoteData };
-          pendingDays.forEach(d => {
-            if (AppState.monthData[d]) {
-              updated[d] = AppState.monthData[d];
-            }
-          });
-
-          AppState.monthData = updated;
-          saveMonthData();
-
-          if (!isSilent) {
-            showToast(`✅ Đã đồng bộ mới nhất từ Google Sheets!`, 'success');
-          } else {
-            console.log('🔄 Đã tự động cập nhật thay đổi từ Google Sheets!');
-          }
-        } else if (!isSilent) {
-          showToast(`🟢 Dữ liệu trên App và Google Sheets đã khớp 100%!`, 'success');
+        mergeRemoteData(result.data);
+        if (!isSilent) {
+          showToast(`🟢 Đã kiểm tra & đồng bộ với Google Sheets!`, 'success');
         }
       } else {
-        // Lưu dữ liệu của tháng khác vào bộ nhớ
         const storageKey = getStorageKey(year, month);
-        localStorage.setItem(storageKey, JSON.stringify(remoteData));
+        localStorage.setItem(storageKey, JSON.stringify(result.data));
         renderAnnualSummaryTable();
       }
     }
@@ -453,7 +543,6 @@ function updateTodayShiftStatus() {
   elements.todayCheckOutTime.textContent = record.checkOut || '--:--:--';
   elements.todayKmOut.textContent = record.kmOut ? `Km: ${Number(record.kmOut).toLocaleString()}` : 'Km: ---';
 
-  // Tự động gợi ý Vào ca hoặc Tan ca
   if (!record.checkIn) {
     elements.modeRadioIn.checked = true;
     elements.btnCaptureLabel.textContent = 'Chụp Check-in Giờ Vào';
@@ -573,17 +662,19 @@ function processCapturedImage(sourceElement) {
     date: dateStr,
     time: timeStr,
     mode: mode,
-    km: ''
+    km: '',
+    location: getCurrentLocationString()
   });
 
   openConfirmationModal(mode, day, month, year, dateStr, timeStr);
 }
 
-// --- Draw Timestamp & Watermark Overlay ---
+// --- Draw Timestamp & Watermark Overlay (có Vị trí) ---
 function drawWatermarkOnCanvas(ctx, w, h, data) {
   const scale = Math.max(w, h) / 1000;
   const badgeWidth = Math.min(w * 0.92, 540 * scale);
-  const badgeHeight = 110 * scale;
+  const hasLocation = Boolean(data.location);
+  const badgeHeight = (hasLocation ? 145 : 110) * scale;
   const margin = 24 * scale;
   const x = margin;
   const y = h - badgeHeight - margin;
@@ -591,7 +682,6 @@ function drawWatermarkOnCanvas(ctx, w, h, data) {
 
   ctx.save();
 
-  // Nền badge tối mờ có viền đổ bóng
   ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
   ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
   ctx.shadowBlur = 15 * scale;
@@ -622,6 +712,19 @@ function drawWatermarkOnCanvas(ctx, w, h, data) {
   ctx.fillStyle = '#93c5fd';
   const kmText = data.km ? `🚗 ODO: ${Number(data.km).toLocaleString()} KM` : `🚗 ODO: Đang xác nhận Km...`;
   ctx.fillText(kmText, x + 20 * scale, y + 76 * scale);
+
+  // Dòng vị trí (nếu có)
+  if (hasLocation) {
+    ctx.font = `${14 * scale}px sans-serif`;
+    ctx.fillStyle = '#a5b4fc';
+    // Cắt ngắn nếu quá dài
+    let locText = data.location;
+    const maxW = badgeWidth - 40 * scale;
+    while (ctx.measureText(locText).width > maxW && locText.length > 10) {
+      locText = locText.slice(0, -4) + '...';
+    }
+    ctx.fillText(locText, x + 20 * scale, y + 110 * scale);
+  }
 
   ctx.restore();
 }
@@ -669,7 +772,8 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
       date: dateStr,
       time: timeStr,
       mode: mode,
-      km: kmVal
+      km: kmVal,
+      location: getCurrentLocationString()
     });
   };
 }
@@ -701,31 +805,28 @@ async function handleConfirmAndSave() {
   const time = AppState.capturedTimeStr;
   const date = AppState.capturedDateStr;
 
-  // Cập nhật canvas lần cuối với số Km vừa nhập
   const canvas = elements.watermarkedCanvas;
   const ctx = canvas.getContext('2d');
   drawWatermarkOnCanvas(ctx, canvas.width, canvas.height, {
     date: date,
     time: time,
     mode: mode,
-    km: kmNum
+    km: kmNum,
+    location: getCurrentLocationString()
   });
 
-  // 1. Lưu ảnh đóng dấu ngày giờ & Km vào điện thoại (Hoạt động hoàn toàn Offline)
   try {
     saveCanvasImageToPhone(canvas, mode, date, time);
   } catch (err) {
     console.error('Lỗi khi tải ảnh:', err);
   }
 
-  // 2. Chuyển view sang tháng được ghi nhận nếu đang ở tháng khác
   if (AppState.selectedMonth !== month || AppState.selectedYear !== year) {
     AppState.selectedMonth = month;
     AppState.selectedYear = year;
     loadMonthData();
   }
 
-  // 3. Ghi nhận dữ liệu vào bộ nhớ máy (LocalStorage)
   if (!AppState.monthData[day]) {
     AppState.monthData[day] = { checkIn: '', checkOut: '', kmIn: null, kmOut: null };
   }
@@ -741,7 +842,6 @@ async function handleConfirmAndSave() {
   saveMonthData();
   closeConfirmationModal();
 
-  // 4. Đưa vào Hàng chờ Offline (Sync Queue) để tự động đẩy lên Google Sheets
   const syncRecordItem = {
     id: 'rec_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
     year: year,
@@ -797,7 +897,7 @@ function calculateDuration(inTime, outTime) {
   let sec2 = (h2 || 0) * 3600 + (m2 || 0) * 60 + (s2 || 0);
 
   let diff = sec2 - sec1;
-  if (diff < 0) diff += 24 * 3600; // Qua đêm
+  if (diff < 0) diff += 24 * 3600;
 
   const h = String(Math.floor(diff / 3600)).padStart(2, '0');
   const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
@@ -812,7 +912,7 @@ function calculateKmDiff(kmIn, kmOut) {
 }
 
 function renderTimesheetTable() {
-  const daysInMonth = 31; // Luôn hiển thị đủ 31 ngày theo đúng bảng chấm công chuẩn
+  const daysInMonth = 31;
   const currentDay = (AppState.selectedMonth === (new Date().getMonth() + 1) && AppState.selectedYear === new Date().getFullYear())
     ? new Date().getDate()
     : null;
@@ -903,7 +1003,7 @@ function renderAnnualSummaryTable() {
     let mKm = 0;
     let daysWithData = 0;
 
-    const daysInM = 31; // Cố định 31 ngày
+    const daysInM = 31;
     for (let d = 1; d <= daysInM; d++) {
       const rec = mData[d];
       if (rec && (rec.checkIn || rec.checkOut || rec.kmIn || rec.kmOut)) {
@@ -1008,7 +1108,6 @@ async function saveEditRow() {
     timestamp: Date.now()
   };
 
-  // Nếu có mạng: Gửi thẳng lên Google Sheets ngay lập tức
   if (navigator.onLine && AppState.scriptUrl) {
     showToast(`🔄 Đang cập nhật ngày ${day} lên Google Sheets...`, 'info');
     try {
@@ -1032,22 +1131,19 @@ async function saveEditRow() {
 
       const result = await res.json();
       if (result && result.status === 'success' && result.data) {
-        AppState.monthData = result.data;
-        saveMonthData();
+        mergeRemoteData(result.data);
         showToast(`✅ Google Sheets đã cập nhật ngày ${day}!`, 'success');
       } else {
         enqueueOfflineRecord(rowUpdateItem);
-        showToast(`⚠️ Đã lưu trên máy (sẽ tự động lên Sheets khi mạng ổn định)`, 'info');
       }
     } catch (err) {
       enqueueOfflineRecord(rowUpdateItem);
-      showToast(`⚠️ Không kết nối được Sheets, đã lưu hàng chờ đồng bộ`, 'info');
+      showToast(`⚠️ Không kết nối được Sheets, đã lưu hàng chờ`, 'info');
     } finally {
       AppState.isSyncing = false;
       updateSyncStatusUI();
     }
   } else {
-    // Ngoại tuyến: Lưu vào hàng chờ
     enqueueOfflineRecord(rowUpdateItem);
     showToast(`💾 Đã lưu thay đổi (sẽ tự động lên Google Sheets khi có mạng)!`, 'success');
   }
@@ -1055,7 +1151,7 @@ async function saveEditRow() {
 
 // --- Export to CSV / Excel ---
 function exportToCsv() {
-  const daysInMonth = 31; // Luôn xuất đủ 31 ngày
+  const daysInMonth = 31;
   let csv = '\uFEFFNgày,Check in,Check out,Km in,Km out,Giờ làm,Km đi được\r\n';
 
   let totalSeconds = 0;
@@ -1134,14 +1230,12 @@ function showToast(message, type = 'info') {
 
 // --- Setup Event Listeners ---
 function setupEventListeners() {
-  // Tabs
   elements.tabButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       switchTab(btn.getAttribute('data-tab'));
     });
   });
 
-  // Mode radio change
   elements.modeRadioIn.addEventListener('change', () => {
     elements.btnCaptureLabel.textContent = 'Chụp Check-in Giờ Vào';
   });
@@ -1149,12 +1243,10 @@ function setupEventListeners() {
     elements.btnCaptureLabel.textContent = 'Chụp Check-out Tan Ca';
   });
 
-  // Camera buttons
   elements.btnCapture.addEventListener('click', captureCurrentFrame);
   elements.btnSwitchCamera.addEventListener('click', switchCamera);
   elements.fileFallbackInput.addEventListener('change', handleFallbackCapture);
 
-  // Modal actions
   elements.btnConfirmSave.addEventListener('click', handleConfirmAndSave);
   elements.btnRetake.addEventListener('click', closeConfirmationModal);
   elements.btnCancelModal.addEventListener('click', closeConfirmationModal);
@@ -1165,7 +1257,6 @@ function setupEventListeners() {
     }
   });
 
-  // Month navigation
   elements.btnPrevMonth.addEventListener('click', () => {
     if (AppState.selectedMonth === 1) {
       AppState.selectedMonth = 12;
@@ -1196,7 +1287,6 @@ function setupEventListeners() {
     }
   });
 
-  // Month select dropdown
   elements.monthSelectDropdown.addEventListener('change', (e) => {
     AppState.selectedMonth = parseInt(e.target.value, 10);
     loadMonthData();
@@ -1206,7 +1296,6 @@ function setupEventListeners() {
     }
   });
 
-  // Year Navigation (Tab 3)
   elements.btnPrevYear.addEventListener('click', () => {
     AppState.selectedYear--;
     populateMonthDropdown();
@@ -1223,10 +1312,8 @@ function setupEventListeners() {
     renderAnnualSummaryTable();
   });
 
-  // Timesheet actions
   elements.btnExportExcel.addEventListener('click', exportToCsv);
   
-  // Nút "Đồng bộ ngay" trên thanh công cụ Bảng Chấm Công
   elements.btnSyncOnline.addEventListener('click', async () => {
     if (!AppState.scriptUrl) {
       elements.settingsModal.classList.add('show');
@@ -1244,7 +1331,6 @@ function setupEventListeners() {
     await fetchLiveDataFromSheets(false);
   });
 
-  // Nút trạng thái đồng bộ trên Header
   elements.btnSyncQueue.addEventListener('click', async () => {
     if (!AppState.scriptUrl) {
       elements.settingsModal.classList.add('show');
@@ -1262,14 +1348,15 @@ function setupEventListeners() {
     await fetchLiveDataFromSheets(false);
   });
 
-  // Load sample data button
   elements.btnLoadSampleData.addEventListener('click', () => {
     AppState.monthData = JSON.parse(JSON.stringify(USER_SAMPLE_DATA));
     saveMonthData();
     showToast('✨ Đã nạp dữ liệu mẫu ví dụ của bạn!', 'success');
+    if (navigator.onLine && AppState.scriptUrl) {
+      syncWholeMonthDirectly();
+    }
   });
 
-  // Clear month data
   elements.btnClearData.addEventListener('click', () => {
     if (confirm(`Bạn có chắc muốn xóa tất cả dữ liệu tháng ${AppState.selectedMonth}/${AppState.selectedYear}?`)) {
       AppState.monthData = {};
@@ -1278,7 +1365,6 @@ function setupEventListeners() {
     }
   });
 
-  // Settings modal
   elements.btnSettings.addEventListener('click', () => {
     elements.sheetApiUrl.value = AppState.scriptUrl;
     elements.settingsModal.classList.add('show');
@@ -1323,7 +1409,6 @@ function setupEventListeners() {
     }
   });
 
-  // Edit modal
   elements.btnCloseEdit.addEventListener('click', () => elements.editModal.classList.remove('show'));
   elements.btnSaveEdit.addEventListener('click', saveEditRow);
 }
@@ -1348,8 +1433,7 @@ async function syncWholeMonthDirectly() {
     const result = await res.json();
     if (result && result.status === 'success') {
       if (result.data) {
-        AppState.monthData = result.data;
-        saveMonthData();
+        mergeRemoteData(result.data);
       }
       showToast(`✅ Đã đồng bộ toàn bộ tháng ${AppState.selectedMonth}/${AppState.selectedYear} lên Google Sheets!`, 'success');
     }
