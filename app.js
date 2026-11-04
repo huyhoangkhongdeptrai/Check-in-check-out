@@ -85,6 +85,7 @@ const elements = {
   kmInput: document.getElementById('kmInput'),
   kmInputLabel: document.getElementById('kmInputLabel'),
   kmInputHint: document.getElementById('kmInputHint'),
+  locationInput: document.getElementById('locationInput'),
   btnConfirmSave: document.getElementById('btnConfirmSave'),
   btnRetake: document.getElementById('btnRetake'),
   btnCancelModal: document.getElementById('btnCancelModal'),
@@ -219,12 +220,15 @@ function updateCurrentLocation() {
 }
 
 function getCurrentLocationString() {
+  // Lấy vị trí ưu tiên: từ ô nhập tay trong modal (nếu có) -> từ Geocode tự động
+  if (elements.locationInput && elements.locationInput.value.trim()) {
+    const customLoc = elements.locationInput.value.trim();
+    return customLoc.startsWith('📍') ? customLoc : '📍 ' + customLoc;
+  }
   if (AppState.lastKnownAddress) {
     return '📍 ' + AppState.lastKnownAddress;
   }
-  if (AppState.lastKnownCoords) {
-    return `📍 GPS: ${AppState.lastKnownCoords.lat.toFixed(5)}, ${AppState.lastKnownCoords.lon.toFixed(5)}`;
-  }
+  // Tuyệt đối không hiển thị tọa độ GPS số thô khó đọc
   return '';
 }
 
@@ -759,13 +763,20 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
   elements.modalDateVal.textContent = `${dateStr} (Ngày ${day} Tháng ${month})`;
   elements.modalTimeVal.textContent = timeStr;
 
+  // Điền sẵn địa chỉ nếu tự lấy được
+  if (elements.locationInput) {
+    elements.locationInput.value = AppState.lastKnownAddress || '';
+  }
+
   elements.kmInput.value = '';
   setTimeout(() => {
     elements.kmInput.focus();
   }, 200);
 
-  elements.kmInput.oninput = () => {
+  const redrawModalCanvas = () => {
     const kmVal = elements.kmInput.value.trim();
+    const locVal = elements.locationInput ? elements.locationInput.value.trim() : '';
+    const displayLoc = locVal ? (locVal.startsWith('📍') ? locVal : '📍 ' + locVal) : '';
     const canvas = elements.watermarkedCanvas;
     const ctx = canvas.getContext('2d');
     drawWatermarkOnCanvas(ctx, canvas.width, canvas.height, {
@@ -773,9 +784,14 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
       time: timeStr,
       mode: mode,
       km: kmVal,
-      location: getCurrentLocationString()
+      location: displayLoc
     });
   };
+
+  elements.kmInput.oninput = redrawModalCanvas;
+  if (elements.locationInput) {
+    elements.locationInput.oninput = redrawModalCanvas;
+  }
 }
 
 function closeConfirmationModal() {

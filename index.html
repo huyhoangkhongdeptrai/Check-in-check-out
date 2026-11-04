@@ -313,6 +313,18 @@
             </div>
             <p class="km-hint" id="kmInputHint">Nhập số công tơ mét hiển thị trên xe lúc này.</p>
           </div>
+
+          <!-- MANUAL LOCATION INPUT (OFFLINE / EDITABLE) -->
+          <div class="km-input-section" style="margin-top: 14px;">
+            <label for="locationInput" class="km-input-label">
+              <i class="fa-solid fa-location-dot" style="color: #38bdf8;"></i>
+              <span>Địa chỉ / Vị trí đóng dấu lên ảnh:</span>
+            </label>
+            <div class="km-input-wrapper" style="border-radius: 8px;">
+              <input type="text" id="locationInput" class="km-textbox" style="font-size: 14px; text-align: left; padding: 10px 14px; font-weight: 500;" placeholder="Nhập địa chỉ (hoặc tự lấy khi có mạng)...">
+            </div>
+            <p class="km-hint" id="locationInputHint" style="font-size: 11.5px; color: #94a3b8;">Có mạng app sẽ tự điền. Khi mất mạng bạn có thể tự gõ tên đường/địa điểm tại đây.</p>
+          </div>
         </div>
 
         <div class="modal-footer">
@@ -400,6 +412,6 @@
     <div class="toast-container" id="toastContainer"></div>
   </div>
 
-  <script src="app.js?v=34"></script>
+  <script src="app.js?v=35"></script>
 </body>
 </html>
