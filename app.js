@@ -601,6 +601,7 @@ async function fetchLiveDataFromSheets(isSilent = false, year = AppState.selecte
 // --- Status & Auto-Detect Shift Mode ---
 function setShift(shiftNum) {
   AppState.activeShift = shiftNum;
+  AppState.manualModePicked = false; // Reset chọn tay chế độ khi đổi ca
   if (elements.btnShift1 && elements.btnShift2) {
     elements.btnShift1.classList.toggle('active', shiftNum === 1);
     elements.btnShift2.classList.toggle('active', shiftNum === 2);
@@ -623,7 +624,6 @@ function updateTodayShiftStatus() {
   const rec2 = AppState.monthData[rec2Index] || {};
 
   // Tự động chuyển sang Ca 2 nếu hôm nay Ca 1 đã hoàn thành cả Check-in và Check-out
-  // và người dùng chưa có thao tác chọn tay khác
   if (rec1.checkIn && rec1.checkOut && !rec2.checkIn && AppState.activeShift === 1 && !AppState.manualShiftPicked) {
     AppState.activeShift = 2;
   }
@@ -639,21 +639,31 @@ function updateTodayShiftStatus() {
 
   let currentMode = elements.modeRadioIn && elements.modeRadioIn.checked ? 'in' : 'out';
 
-  if (!currentRec.checkIn) {
-    if (elements.modeRadioIn) elements.modeRadioIn.checked = true;
-    currentMode = 'in';
+  // Nếu người dùng CHƯA bấm chọn tay nút Vào/Tan ca, hệ thống mới tự động gợi ý
+  if (!AppState.manualModePicked) {
+    if (!currentRec.checkIn) {
+      if (elements.modeRadioIn) elements.modeRadioIn.checked = true;
+      currentMode = 'in';
+    } else if (currentRec.checkIn && !currentRec.checkOut) {
+      if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
+      currentMode = 'out';
+    } else {
+      if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
+      currentMode = 'out';
+    }
+  }
+
+  // Cập nhật nhãn nút bấm theo đúng chế độ người dùng đang chọn (dù là chọn tay hay tự động)
+  if (currentMode === 'in') {
     elements.btnCaptureLabel.textContent = `Chụp Check-in (${shiftTitle})`;
-    elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in ${shiftTitle}. Bấm nút để chụp giờ vào ca & Km đầu.`;
-  } else if (currentRec.checkIn && !currentRec.checkOut) {
-    if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
-    currentMode = 'out';
-    elements.btnCaptureLabel.textContent = `Chụp Check-out (${shiftTitle})`;
-    elements.actionIndicatorText.textContent = `Đã vào ${shiftTitle} lúc ${currentRec.checkIn} (Km: ${currentRec.kmIn ? Number(currentRec.kmIn).toLocaleString() : '---'}). Bấm nút để chụp Tan ca & Km sau.`;
+    elements.actionIndicatorText.textContent = currentRec.checkIn 
+      ? `Đã có giờ vào (${currentRec.checkIn}). Bạn có thể chụp lại để cập nhật giờ vào mới.`
+      : `Chụp giờ vào ca & Km bắt đầu cho ${shiftTitle}.`;
   } else {
-    if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
-    currentMode = 'out';
-    elements.btnCaptureLabel.textContent = `Chụp Cập Nhật (${shiftTitle})`;
-    elements.actionIndicatorText.textContent = `Đã hoàn thành ${shiftTitle} hôm nay (Vào: ${currentRec.checkIn} | Về: ${currentRec.checkOut}).`;
+    elements.btnCaptureLabel.textContent = `Chụp Check-out (${shiftTitle})`;
+    elements.actionIndicatorText.textContent = currentRec.checkIn
+      ? `Đã vào lúc ${currentRec.checkIn} (Km: ${currentRec.kmIn ? Number(currentRec.kmIn).toLocaleString() : '---'}). Bấm để chụp Tan ca & Km sau.`
+      : `Chưa có Check-in lúc đầu. Bạn vẫn chụp Check-out bình thường, có thể bổ sung Check-in sau!`;
   }
 
   // Cập nhật Live Watermark Badge dưới nút chụp
@@ -1461,13 +1471,11 @@ function setupEventListeners() {
   });
 
   elements.modeRadioIn.addEventListener('change', () => {
-    const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
-    elements.btnCaptureLabel.textContent = `Chụp Check-in Giờ Vào${shiftTitle}`;
+    AppState.manualModePicked = true;
     updateTodayShiftStatus();
   });
   elements.modeRadioOut.addEventListener('change', () => {
-    const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
-    elements.btnCaptureLabel.textContent = `Chụp Check-out Tan Ca${shiftTitle}`;
+    AppState.manualModePicked = true;
     updateTodayShiftStatus();
   });
 
