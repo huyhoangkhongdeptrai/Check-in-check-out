@@ -692,9 +692,6 @@ function updateLiveWatermarkBadgeUI(mode, isShift2, record = {}) {
     elements.liveBadgeLocation.textContent = locStr || '📍 Đang lấy vị trí GPS...';
   }
 }
-    elements.actionIndicatorText.textContent = `Đã hoàn thành ${shiftTitle} hôm nay (Vào: ${currentRec.checkIn} | Về: ${currentRec.checkOut}).`;
-  }
-}
 
 // --- Camera Handling ---
 async function initCamera() {
