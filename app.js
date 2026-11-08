@@ -18,6 +18,7 @@ const AppState = {
   capturedMonth: 1,
   capturedYear: 2026,
   capturedMode: 'in', // 'in' or 'out'
+  activeShift: 1, // 1: Ca 1, 2: Ca 2
   scriptUrl: localStorage.getItem('chamcong_sheet_api_url') || '',
   monthData: {},
   offlineQueue: JSON.parse(localStorage.getItem('chamcong_offline_queue') || '[]'),
@@ -64,6 +65,8 @@ const elements = {
   todayKmIn: document.getElementById('todayKmIn'),
   todayCheckOutTime: document.getElementById('todayCheckOutTime'),
   todayKmOut: document.getElementById('todayKmOut'),
+  btnShift1: document.getElementById('btnShift1'),
+  btnShift2: document.getElementById('btnShift2'),
   actionIndicatorText: document.getElementById('actionIndicatorText'),
   modeRadioIn: document.getElementById('modeRadioIn'),
   modeRadioOut: document.getElementById('modeRadioOut'),
@@ -122,10 +125,12 @@ const elements = {
   btnSaveEdit: document.getElementById('btnSaveEdit'),
   editModalTitle: document.getElementById('editModalTitle'),
   editDayInput: document.getElementById('editDayInput'),
+  editDayLabel: document.getElementById('editDayLabel'),
   editCheckIn: document.getElementById('editCheckIn'),
   editCheckOut: document.getElementById('editCheckOut'),
   editKmIn: document.getElementById('editKmIn'),
   editKmOut: document.getElementById('editKmOut'),
+  editNote: document.getElementById('editNote'),
   toastContainer: document.getElementById('toastContainer')
 };
 
@@ -180,7 +185,47 @@ function initGeolocation() {
   }, 60000);
 }
 
-function updateCurrentLocation() {
+async function reverseGeocodeCoords(lat, lon) {
+  // 1. Thử dịch vụ BigDataCloud (Miễn phí, cực nhanh, chuẩn tiếng Việt cho mobile)
+  try {
+    const bdcRes = await fetch(
+      `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=vi`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (bdcRes.ok) {
+      const bdcData = await bdcRes.json();
+      const parts = [bdcData.locality, bdcData.city || bdcData.principalSubdivision].filter(Boolean);
+      if (parts.length > 0) {
+        return parts.join(', ');
+      }
+    }
+  } catch (e) {
+    console.warn('BigDataCloud geocode lỗi, chuyển sang nguồn phụ:', e);
+  }
+
+  // 2. Nguồn phụ: OpenStreetMap Nominatim
+  try {
+    const osmRes = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=vi&zoom=18`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (osmRes.ok) {
+      const data = await osmRes.json();
+      if (data && data.display_name) {
+        const a = data.address || {};
+        const parts = [a.road, a.suburb || a.quarter || a.neighbourhood, a.city || a.town || a.village || a.county].filter(Boolean);
+        return parts.length > 0 ? parts.join(', ') : data.display_name.split(',').slice(0, 3).join(',');
+      }
+    }
+  } catch (e) {
+    console.warn('Nominatim geocode lỗi:', e);
+  }
+
+  return '';
+}
+
+function updateCurrentLocation(onSuccessCallback) {
+  if (!navigator.geolocation) return;
   if (AppState.isGettingLocation) return;
   AppState.isGettingLocation = true;
 
@@ -190,29 +235,20 @@ function updateCurrentLocation() {
       AppState.lastKnownCoords = coords;
       localStorage.setItem('chamcong_last_coords', JSON.stringify(coords));
 
-      // Thử reverse geocode nếu có mạng
       if (navigator.onLine) {
-        try {
-          const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?lat=${coords.lat}&lon=${coords.lon}&format=json&accept-language=vi&zoom=18`,
-            { signal: AbortSignal.timeout(6000) }
-          );
-          const data = await res.json();
-          if (data && data.display_name) {
-            // Lấy phần ngắn gọn: road, suburb, city
-            const a = data.address || {};
-            const parts = [a.road, a.suburb || a.quarter || a.neighbourhood, a.city || a.town || a.village || a.county].filter(Boolean);
-            AppState.lastKnownAddress = parts.length > 0 ? parts.join(', ') : data.display_name.split(',').slice(0, 3).join(',');
-            localStorage.setItem('chamcong_last_address', AppState.lastKnownAddress);
+        const address = await reverseGeocodeCoords(coords.lat, coords.lon);
+        if (address) {
+          AppState.lastKnownAddress = address;
+          localStorage.setItem('chamcong_last_address', address);
+          if (typeof onSuccessCallback === 'function') {
+            onSuccessCallback(address);
           }
-        } catch (e) {
-          console.warn('Reverse geocode lỗi (dùng cache):', e);
         }
       }
       AppState.isGettingLocation = false;
     },
     (err) => {
-      console.warn('GPS lỗi:', err.message);
+      console.warn('GPS lỗi hoặc chưa được cấp quyền:', err.message);
       AppState.isGettingLocation = false;
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
@@ -311,17 +347,20 @@ function mergeRemoteData(remoteData) {
   }
 
   let hasChanged = false;
+  const TOTAL_ROWS = 62;
 
-  for (let d = 1; d <= 31; d++) {
+  for (let d = 1; d <= TOTAL_ROWS; d++) {
     const remoteRec = remoteData[d];
     const localRec = AppState.monthData[d];
 
-    if (remoteRec && (remoteRec.checkIn || remoteRec.checkOut || (remoteRec.kmIn !== null && remoteRec.kmIn !== '') || (remoteRec.kmOut !== null && remoteRec.kmOut !== ''))) {
+    if (remoteRec && (remoteRec.checkIn || remoteRec.checkOut || (remoteRec.kmIn !== null && remoteRec.kmIn !== '') || (remoteRec.kmOut !== null && remoteRec.kmOut !== '') || remoteRec.note || (d > 31 && remoteRec.label))) {
       const freshRec = {
+        label: remoteRec.label || (localRec ? localRec.label : (d <= 31 ? `Ngày ${d}` : `Ca 2 ngày ${d - 31}`)),
         checkIn: remoteRec.checkIn || '',
         checkOut: remoteRec.checkOut || '',
         kmIn: (remoteRec.kmIn !== undefined && remoteRec.kmIn !== null && remoteRec.kmIn !== '') ? remoteRec.kmIn : null,
-        kmOut: (remoteRec.kmOut !== undefined && remoteRec.kmOut !== null && remoteRec.kmOut !== '') ? remoteRec.kmOut : null
+        kmOut: (remoteRec.kmOut !== undefined && remoteRec.kmOut !== null && remoteRec.kmOut !== '') ? remoteRec.kmOut : null,
+        note: remoteRec.note || ''
       };
 
       if (!localRec || JSON.stringify(localRec) !== JSON.stringify(freshRec)) {
@@ -531,6 +570,15 @@ async function fetchLiveDataFromSheets(isSilent = false, year = AppState.selecte
 }
 
 // --- Status & Auto-Detect Shift Mode ---
+function setShift(shiftNum) {
+  AppState.activeShift = shiftNum;
+  if (elements.btnShift1 && elements.btnShift2) {
+    elements.btnShift1.classList.toggle('active', shiftNum === 1);
+    elements.btnShift2.classList.toggle('active', shiftNum === 2);
+  }
+  updateTodayShiftStatus();
+}
+
 function updateTodayShiftStatus() {
   const now = new Date();
   const today = now.getDate();
@@ -541,24 +589,42 @@ function updateTodayShiftStatus() {
     return;
   }
 
-  const record = AppState.monthData[today] || {};
-  elements.todayCheckInTime.textContent = record.checkIn || '--:--:--';
-  elements.todayKmIn.textContent = record.kmIn ? `Km: ${Number(record.kmIn).toLocaleString()}` : 'Km: ---';
-  elements.todayCheckOutTime.textContent = record.checkOut || '--:--:--';
-  elements.todayKmOut.textContent = record.kmOut ? `Km: ${Number(record.kmOut).toLocaleString()}` : 'Km: ---';
+  const rec1 = AppState.monthData[today] || {};
+  const rec2Index = today + 31;
+  const rec2 = AppState.monthData[rec2Index] || {};
 
-  if (!record.checkIn) {
+  // Tự động chuyển sang Ca 2 nếu hôm nay Ca 1 đã hoàn thành cả Check-in và Check-out
+  // và người dùng chưa có thao tác chọn tay khác
+  if (rec1.checkIn && rec1.checkOut && !rec2.checkIn && AppState.activeShift === 1 && !AppState.manualShiftPicked) {
+    AppState.activeShift = 2;
+  }
+
+  const isShift2 = (AppState.activeShift === 2);
+  if (elements.btnShift1 && elements.btnShift2) {
+    elements.btnShift1.classList.toggle('active', !isShift2);
+    elements.btnShift2.classList.toggle('active', isShift2);
+  }
+
+  const currentRec = isShift2 ? rec2 : rec1;
+  const shiftTitle = isShift2 ? 'Ca 2' : 'Ca 1';
+
+  elements.todayCheckInTime.textContent = currentRec.checkIn || '--:--:--';
+  elements.todayKmIn.textContent = currentRec.kmIn ? `Km: ${Number(currentRec.kmIn).toLocaleString()}` : 'Km: ---';
+  elements.todayCheckOutTime.textContent = currentRec.checkOut || '--:--:--';
+  elements.todayKmOut.textContent = currentRec.kmOut ? `Km: ${Number(currentRec.kmOut).toLocaleString()}` : 'Km: ---';
+
+  if (!currentRec.checkIn) {
     elements.modeRadioIn.checked = true;
-    elements.btnCaptureLabel.textContent = 'Chụp Check-in Giờ Vào';
-    elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in. Bấm nút để chụp giờ vào ca & Km đầu.`;
-  } else if (record.checkIn && !record.checkOut) {
+    elements.btnCaptureLabel.textContent = `Chụp Check-in (${shiftTitle})`;
+    elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in ${shiftTitle}. Bấm nút để chụp giờ vào ca & Km đầu.`;
+  } else if (currentRec.checkIn && !currentRec.checkOut) {
     elements.modeRadioOut.checked = true;
-    elements.btnCaptureLabel.textContent = 'Chụp Check-out Tan Ca';
-    elements.actionIndicatorText.textContent = `Đã vào ca lúc ${record.checkIn} (Km: ${record.kmIn ? Number(record.kmIn).toLocaleString() : '---'}). Bấm nút để chụp Tan ca & Km sau.`;
+    elements.btnCaptureLabel.textContent = `Chụp Check-out (${shiftTitle})`;
+    elements.actionIndicatorText.textContent = `Đã vào ${shiftTitle} lúc ${currentRec.checkIn} (Km: ${currentRec.kmIn ? Number(currentRec.kmIn).toLocaleString() : '---'}). Bấm nút để chụp Tan ca & Km sau.`;
   } else {
     elements.modeRadioOut.checked = true;
-    elements.btnCaptureLabel.textContent = 'Chụp Cập Nhật Lại';
-    elements.actionIndicatorText.textContent = `Đã hoàn thành ca hôm nay (Vào: ${record.checkIn} | Về: ${record.checkOut}).`;
+    elements.btnCaptureLabel.textContent = `Chụp Cập Nhật (${shiftTitle})`;
+    elements.actionIndicatorText.textContent = `Đã hoàn thành ${shiftTitle} hôm nay (Vào: ${currentRec.checkIn} | Về: ${currentRec.checkOut}).`;
   }
 }
 
@@ -666,6 +732,7 @@ function processCapturedImage(sourceElement) {
     date: dateStr,
     time: timeStr,
     mode: mode,
+    shift: AppState.activeShift,
     km: '',
     location: getCurrentLocationString()
   });
@@ -702,8 +769,9 @@ function drawWatermarkOnCanvas(ctx, w, h, data) {
   ctx.shadowColor = 'transparent';
   ctx.textBaseline = 'top';
 
+  const shiftLabel = (data.shift === 2) ? ' CA 2' : '';
   const tagColor = data.mode === 'in' ? '#34d399' : '#fbbf24';
-  const tagText = data.mode === 'in' ? '🟢 CHECK IN (GIỜ VÀO LÀM)' : '🟠 CHECK OUT (GIỜ TAN CA)';
+  const tagText = data.mode === 'in' ? `🟢 CHECK IN${shiftLabel} (GIỜ VÀO LÀM)` : `🟠 CHECK OUT${shiftLabel} (GIỜ TAN CA)`;
   ctx.font = `bold ${16 * scale}px sans-serif`;
   ctx.fillStyle = tagColor;
   ctx.fillText(tagText, x + 20 * scale, y + 16 * scale);
@@ -736,22 +804,24 @@ function drawWatermarkOnCanvas(ctx, w, h, data) {
 // --- Open Confirmation Modal with Prominent Km Input ---
 function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
   elements.confirmModal.classList.add('show');
+  const shiftText = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
 
   if (mode === 'in') {
-    elements.modalBadge.textContent = 'CHECK IN';
+    elements.modalBadge.textContent = 'CHECK IN' + shiftText;
     elements.modalBadge.className = 'modal-badge';
-    elements.modalTitle.textContent = 'Xác Nhận Giờ Vào Làm';
+    elements.modalTitle.textContent = 'Xác Nhận Giờ Vào Làm' + shiftText;
     elements.kmInputLabel.innerHTML = '<i class="fa-solid fa-gauge-high"></i> <span>Nhập số Km lúc đầu (bắt buộc):</span>';
     elements.kmInputHint.textContent = 'Nhập số công tơ mét xe lúc bạn bắt đầu ca làm việc.';
     elements.modalPrevKmRow.style.display = 'none';
   } else {
-    elements.modalBadge.textContent = 'CHECK OUT';
+    elements.modalBadge.textContent = 'CHECK OUT' + shiftText;
     elements.modalBadge.className = 'modal-badge out';
-    elements.modalTitle.textContent = 'Xác Nhận Giờ Tan Ca';
+    elements.modalTitle.textContent = 'Xác Nhận Giờ Tan Ca' + shiftText;
     elements.kmInputLabel.innerHTML = '<i class="fa-solid fa-gauge-high"></i> <span>Nhập số Km lúc sau (bắt buộc):</span>';
     elements.kmInputHint.textContent = 'Nhập số công tơ mét xe khi bạn kết thúc ca làm.';
 
-    const todayRecord = AppState.monthData[day];
+    const targetDayIndex = (AppState.activeShift === 2) ? (day + 31) : day;
+    const todayRecord = AppState.monthData[targetDayIndex];
     if (todayRecord && todayRecord.kmIn) {
       elements.modalPrevKmRow.style.display = 'flex';
       elements.modalPrevKmVal.textContent = `${Number(todayRecord.kmIn).toLocaleString()} km (lúc ${todayRecord.checkIn || '--'})`;
@@ -760,12 +830,20 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
     }
   }
 
-  elements.modalDateVal.textContent = `${dateStr} (Ngày ${day} Tháng ${month})`;
+  elements.modalDateVal.textContent = `${dateStr} (Ngày ${day} Tháng ${month}${shiftText})`;
   elements.modalTimeVal.textContent = timeStr;
 
   // Điền sẵn địa chỉ nếu tự lấy được
   if (elements.locationInput) {
     elements.locationInput.value = AppState.lastKnownAddress || '';
+    if (!elements.locationInput.value && navigator.geolocation) {
+      updateCurrentLocation((newAddress) => {
+        if (elements.locationInput && !elements.locationInput.value) {
+          elements.locationInput.value = newAddress;
+          redrawModalCanvas();
+        }
+      });
+    }
   }
 
   elements.kmInput.value = '';
@@ -783,6 +861,7 @@ function openConfirmationModal(mode, day, month, year, dateStr, timeStr) {
       date: dateStr,
       time: timeStr,
       mode: mode,
+      shift: AppState.activeShift,
       km: kmVal,
       location: displayLoc
     });
@@ -818,8 +897,10 @@ async function handleConfirmAndSave() {
   const month = AppState.capturedMonth;
   const year = AppState.capturedYear;
   const mode = AppState.capturedMode;
+  const shift = AppState.activeShift;
   const time = AppState.capturedTimeStr;
   const date = AppState.capturedDateStr;
+  const targetDayIndex = (shift === 2) ? (day + 31) : day;
 
   const canvas = elements.watermarkedCanvas;
   const ctx = canvas.getContext('2d');
@@ -827,12 +908,13 @@ async function handleConfirmAndSave() {
     date: date,
     time: time,
     mode: mode,
+    shift: shift,
     km: kmNum,
     location: getCurrentLocationString()
   });
 
   try {
-    saveCanvasImageToPhone(canvas, mode, date, time);
+    saveCanvasImageToPhone(canvas, mode, date, time, shift);
   } catch (err) {
     console.error('Lỗi khi tải ảnh:', err);
   }
@@ -843,16 +925,23 @@ async function handleConfirmAndSave() {
     loadMonthData();
   }
 
-  if (!AppState.monthData[day]) {
-    AppState.monthData[day] = { checkIn: '', checkOut: '', kmIn: null, kmOut: null };
+  if (!AppState.monthData[targetDayIndex]) {
+    AppState.monthData[targetDayIndex] = {
+      label: (shift === 2) ? `Ca 2 ngày ${day}` : `Ngày ${day}`,
+      checkIn: '',
+      checkOut: '',
+      kmIn: null,
+      kmOut: null,
+      note: ''
+    };
   }
 
   if (mode === 'in') {
-    AppState.monthData[day].checkIn = time;
-    AppState.monthData[day].kmIn = kmNum;
+    AppState.monthData[targetDayIndex].checkIn = time;
+    AppState.monthData[targetDayIndex].kmIn = kmNum;
   } else {
-    AppState.monthData[day].checkOut = time;
-    AppState.monthData[day].kmOut = kmNum;
+    AppState.monthData[targetDayIndex].checkOut = time;
+    AppState.monthData[targetDayIndex].kmOut = kmNum;
   }
 
   saveMonthData();
@@ -863,6 +952,7 @@ async function handleConfirmAndSave() {
     year: year,
     month: month,
     day: day,
+    shift: shift,
     type: mode,
     time: time,
     km: kmNum,
@@ -885,10 +975,11 @@ async function handleConfirmAndSave() {
 }
 
 // --- Download Canvas to Phone Storage ---
-function saveCanvasImageToPhone(canvas, mode, dateStr, timeStr) {
+function saveCanvasImageToPhone(canvas, mode, dateStr, timeStr, shift = 1) {
   const cleanDate = dateStr.replace(/\//g, '');
   const cleanTime = timeStr.replace(/:/g, '');
-  const filename = `ChamCong_${mode === 'in' ? 'CheckIn' : 'CheckOut'}_${cleanDate}_${cleanTime}.jpg`;
+  const shiftPart = (shift === 2) ? '_Ca2' : '';
+  const filename = `ChamCong_${mode === 'in' ? 'CheckIn' : 'CheckOut'}${shiftPart}_${cleanDate}_${cleanTime}.jpg`;
 
   canvas.toBlob((blob) => {
     if (!blob) return;
@@ -928,7 +1019,7 @@ function calculateKmDiff(kmIn, kmOut) {
 }
 
 function renderTimesheetTable() {
-  const daysInMonth = 31;
+  const TOTAL_ROWS = 62;
   const currentDay = (AppState.selectedMonth === (new Date().getMonth() + 1) && AppState.selectedYear === new Date().getFullYear())
     ? new Date().getDate()
     : null;
@@ -941,12 +1032,22 @@ function renderTimesheetTable() {
   let totalKm = 0;
   let rowsHtml = '';
 
-  for (let day = 1; day <= daysInMonth; day++) {
-    const record = AppState.monthData[day] || {};
+  for (let idx = 1; idx <= TOTAL_ROWS; idx++) {
+    const record = AppState.monthData[idx] || {};
     const checkIn = record.checkIn || '';
     const checkOut = record.checkOut || '';
     const kmIn = (record.kmIn !== undefined && record.kmIn !== null && record.kmIn !== '') ? record.kmIn : '';
     const kmOut = (record.kmOut !== undefined && record.kmOut !== null && record.kmOut !== '') ? record.kmOut : '';
+    const note = record.note || '';
+
+    let label = record.label;
+    if (!label) {
+      if (idx <= 31) {
+        label = `${idx}`;
+      } else {
+        label = `Ca 2 ngày ${idx - 31}`;
+      }
+    }
 
     const duration = calculateDuration(checkIn, checkOut);
     const kmDiff = calculateKmDiff(kmIn, kmOut);
@@ -957,20 +1058,22 @@ function renderTimesheetTable() {
     }
     totalKm += kmDiff;
 
-    const isToday = (day === currentDay);
-    const hasData = Boolean(checkIn || checkOut || kmIn || kmOut);
+    const isToday = (idx === currentDay);
+    const isShift2Row = (idx > 31);
+    const hasData = Boolean(checkIn || checkOut || kmIn || kmOut || note);
 
     rowsHtml += `
-      <tr class="${isToday ? 'today-row' : ''} ${hasData ? 'filled-row' : ''}" id="row-day-${day}">
-        <td class="col-day">${day}</td>
+      <tr class="${isToday ? 'today-row' : ''} ${hasData ? 'filled-row' : ''} ${isShift2Row ? 'shift2-row' : ''}" id="row-day-${idx}">
+        <td class="col-day" style="${isShift2Row ? 'color:#38bdf8;font-style:italic;' : ''}">${label}</td>
         <td>${checkIn}</td>
         <td>${checkOut}</td>
         <td>${kmIn !== '' ? Number(kmIn).toLocaleString() : ''}</td>
         <td>${kmOut !== '' ? Number(kmOut).toLocaleString() : ''}</td>
         <td style="font-weight:600; color: ${duration !== '00:00:00' ? '#38bdf8' : 'inherit'}">${duration}</td>
         <td style="font-weight:600; color: ${kmDiff > 0 ? '#34d399' : 'inherit'}">${kmDiff}</td>
+        <td style="text-align:left; font-size:12px; color:#cbd5e1; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${note}</td>
         <td class="col-act">
-          <button onclick="openEditModal(${day})" title="Sửa hàng này">
+          <button onclick="openEditModal(${idx})" title="Sửa hàng này">
             <i class="fa-solid fa-pen-to-square"></i>
           </button>
         </td>
@@ -1019,11 +1122,11 @@ function renderAnnualSummaryTable() {
     let mKm = 0;
     let daysWithData = 0;
 
-    const daysInM = 31;
-    for (let d = 1; d <= daysInM; d++) {
+    const TOTAL_ROWS = 62;
+    for (let d = 1; d <= TOTAL_ROWS; d++) {
       const rec = mData[d];
-      if (rec && (rec.checkIn || rec.checkOut || rec.kmIn || rec.kmOut)) {
-        daysWithData++;
+      if (rec && (rec.checkIn || rec.checkOut || rec.kmIn || rec.kmOut || rec.note)) {
+        if (d <= 31) daysWithData++;
         if (rec.checkIn && rec.checkOut) {
           const dur = calculateDuration(rec.checkIn, rec.checkOut);
           const [h, mi, s] = dur.split(':').map(Number);
@@ -1081,31 +1184,42 @@ window.jumpToMonth = function(m) {
 };
 
 // --- Edit Row Modal (Đồng Bộ Ngay Khi Sửa Bảng Trên App) ---
-window.openEditModal = function(day) {
-  const record = AppState.monthData[day] || {};
-  elements.editDayInput.value = day;
-  elements.editModalTitle.textContent = `Chỉnh Sửa Dữ Liệu Ngày ${day}/${AppState.selectedMonth}`;
+window.openEditModal = function(idx) {
+  const record = AppState.monthData[idx] || {};
+  elements.editDayInput.value = idx;
+
+  let defaultLabel = record.label;
+  if (!defaultLabel) {
+    defaultLabel = (idx <= 31) ? `Ngày ${idx}` : `Ca 2 ngày ${idx - 31}`;
+  }
+  elements.editDayLabel.value = defaultLabel;
+  elements.editModalTitle.textContent = `Chỉnh Sửa Dữ Liệu: ${defaultLabel}`;
   elements.editCheckIn.value = record.checkIn || '';
   elements.editCheckOut.value = record.checkOut || '';
   elements.editKmIn.value = (record.kmIn !== undefined && record.kmIn !== null) ? record.kmIn : '';
   elements.editKmOut.value = (record.kmOut !== undefined && record.kmOut !== null) ? record.kmOut : '';
+  elements.editNote.value = record.note || '';
   elements.editModal.classList.add('show');
 };
 
 async function saveEditRow() {
-  const day = parseInt(elements.editDayInput.value, 10);
-  if (!day) return;
+  const idx = parseInt(elements.editDayInput.value, 10);
+  if (!idx) return;
 
+  const label = elements.editDayLabel.value.trim();
   const checkIn = elements.editCheckIn.value.trim();
   const checkOut = elements.editCheckOut.value.trim();
   const kmIn = elements.editKmIn.value.trim() !== '' ? parseFloat(elements.editKmIn.value.trim()) : null;
   const kmOut = elements.editKmOut.value.trim() !== '' ? parseFloat(elements.editKmOut.value.trim()) : null;
+  const note = elements.editNote.value.trim();
 
-  AppState.monthData[day] = {
+  AppState.monthData[idx] = {
+    label,
     checkIn,
     checkOut,
     kmIn,
-    kmOut
+    kmOut,
+    note
   };
 
   saveMonthData();
@@ -1115,17 +1229,18 @@ async function saveEditRow() {
     id: 'row_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
     year: AppState.selectedYear,
     month: AppState.selectedMonth,
-    day: day,
+    day: idx,
     type: 'row',
     checkIn: checkIn,
     checkOut: checkOut,
     kmIn: kmIn,
     kmOut: kmOut,
+    note: note,
     timestamp: Date.now()
   };
 
   if (navigator.onLine && AppState.scriptUrl) {
-    showToast(`🔄 Đang cập nhật ngày ${day} lên Google Sheets...`, 'info');
+    showToast(`🔄 Đang cập nhật ${label} lên Google Sheets...`, 'info');
     try {
       AppState.isSyncing = true;
       updateSyncStatusUI();
@@ -1137,18 +1252,19 @@ async function saveEditRow() {
           action: 'update_row',
           year: AppState.selectedYear,
           month: AppState.selectedMonth,
-          day: day,
+          day: idx,
           checkIn: checkIn,
           checkOut: checkOut,
           kmIn: kmIn,
-          kmOut: kmOut
+          kmOut: kmOut,
+          note: note
         })
       });
 
       const result = await res.json();
       if (result && result.status === 'success' && result.data) {
         mergeRemoteData(result.data);
-        showToast(`✅ Google Sheets đã cập nhật ngày ${day}!`, 'success');
+        showToast(`✅ Google Sheets đã cập nhật!`, 'success');
       } else {
         enqueueOfflineRecord(rowUpdateItem);
       }
@@ -1253,11 +1369,29 @@ function setupEventListeners() {
   });
 
   elements.modeRadioIn.addEventListener('change', () => {
-    elements.btnCaptureLabel.textContent = 'Chụp Check-in Giờ Vào';
+    const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
+    elements.btnCaptureLabel.textContent = `Chụp Check-in Giờ Vào${shiftTitle}`;
   });
   elements.modeRadioOut.addEventListener('change', () => {
-    elements.btnCaptureLabel.textContent = 'Chụp Check-out Tan Ca';
+    const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
+    elements.btnCaptureLabel.textContent = `Chụp Check-out Tan Ca${shiftTitle}`;
   });
+
+  if (elements.btnShift1) {
+    elements.btnShift1.addEventListener('click', () => {
+      AppState.manualShiftPicked = true;
+      setShift(1);
+    });
+  }
+  if (elements.btnShift2) {
+    elements.btnShift2.addEventListener('click', () => {
+      AppState.manualShiftPicked = true;
+      setShift(2);
+    });
+  }
+
+  elements.btnSaveEdit.addEventListener('click', saveEditRow);
+  elements.btnCloseEdit.addEventListener('click', () => elements.editModal.classList.remove('show'));
 
   elements.btnCapture.addEventListener('click', captureCurrentFrame);
   elements.btnSwitchCamera.addEventListener('click', switchCamera);

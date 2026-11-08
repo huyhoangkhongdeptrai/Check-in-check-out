@@ -69,15 +69,24 @@
         <!-- Today Shift Status -->
         <div class="today-summary" id="todaySummaryCard">
           <div class="summary-item">
-            <span class="label">Check in (Đến):</span>
+            <span class="label" id="todayCheckInLabel">Check in (Đến):</span>
             <strong class="value" id="todayCheckInTime">--:--:--</strong>
             <span class="sub-value" id="todayKmIn">Km: ---</span>
           </div>
           <div class="summary-divider"></div>
           <div class="summary-item">
-            <span class="label">Check out (Về):</span>
+            <span class="label" id="todayCheckOutLabel">Check out (Về):</span>
             <strong class="value" id="todayCheckOutTime">--:--:--</strong>
             <span class="sub-value" id="todayKmOut">Km: ---</span>
+          </div>
+        </div>
+
+        <!-- Shift Selector (Ca 1 / Ca 2) -->
+        <div class="shift-switch-bar">
+          <span class="shift-switch-label"><i class="fa-solid fa-business-time"></i> Ca làm việc:</span>
+          <div class="shift-toggle-group">
+            <button type="button" class="shift-btn active" id="btnShift1" data-shift="1">Ca 1</button>
+            <button type="button" class="shift-btn" id="btnShift2" data-shift="2">Ca 2</button>
           </div>
         </div>
 
@@ -184,6 +193,7 @@
                 <th>Km out</th>
                 <th>Giờ làm</th>
                 <th>Km đi</th>
+                <th>Ghi chú (Note)</th>
                 <th class="col-act">Sửa</th>
               </tr>
             </thead>
@@ -192,16 +202,16 @@
             </tbody>
             <tfoot>
               <tr class="summary-row-space">
-                <td colspan="8"></td>
+                <td colspan="9"></td>
               </tr>
               <tr class="summary-row">
                 <td colspan="5" class="text-right summary-title">Tổng giờ làm:</td>
                 <td id="sumHours" class="summary-val highlight">00:00:00</td>
-                <td colspan="2"></td>
+                <td colspan="3"></td>
               </tr>
               <tr class="summary-row">
                 <td colspan="5" class="text-right summary-title">Tổng Km đi:</td>
-                <td colspan="3" id="sumKm" class="summary-val highlight">0 km</td>
+                <td colspan="4" id="sumKm" class="summary-val highlight">0 km</td>
               </tr>
             </tfoot>
           </table>
@@ -384,6 +394,10 @@
         <div class="modal-body">
           <input type="hidden" id="editDayInput">
           <div class="edit-grid">
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <label>Tên hiển thị ngày / ca:</label>
+              <input type="text" id="editDayLabel" class="text-input" placeholder="Ví dụ: Ngày 3 hoặc Ca 2 ngày 3">
+            </div>
             <div class="form-group">
               <label>Check in (giờ:phút:giây):</label>
               <input type="text" id="editCheckIn" class="text-input" placeholder="13:36:00">
@@ -400,6 +414,10 @@
               <label>Km out (lúc sau):</label>
               <input type="number" id="editKmOut" class="text-input" placeholder="37391">
             </div>
+            <div class="form-group" style="grid-column: 1 / -1;">
+              <label>Ghi chú (Note):</label>
+              <input type="text" id="editNote" class="text-input" placeholder="Ghi chú thêm...">
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -412,6 +430,6 @@
     <div class="toast-container" id="toastContainer"></div>
   </div>
 
-  <script src="app.js?v=35"></script>
+  <script src="app.js?v=37"></script>
 </body>
 </html>
