@@ -353,14 +353,15 @@ function mergeRemoteData(remoteData) {
     const remoteRec = remoteData[d];
     const localRec = AppState.monthData[d];
 
-    if (remoteRec && (remoteRec.checkIn || remoteRec.checkOut || (remoteRec.kmIn !== null && remoteRec.kmIn !== '') || (remoteRec.kmOut !== null && remoteRec.kmOut !== '') || remoteRec.note || (d > 31 && remoteRec.label))) {
+    if (remoteRec && (remoteRec.checkIn || remoteRec.checkOut || (remoteRec.kmIn !== null && remoteRec.kmIn !== '') || (remoteRec.kmOut !== null && remoteRec.kmOut !== '') || remoteRec.note || remoteRec.photoLink || (d > 31 && remoteRec.label))) {
       const freshRec = {
         label: remoteRec.label || (localRec ? localRec.label : (d <= 31 ? `Ngày ${d}` : `Ca 2 ngày ${d - 31}`)),
         checkIn: remoteRec.checkIn || '',
         checkOut: remoteRec.checkOut || '',
         kmIn: (remoteRec.kmIn !== undefined && remoteRec.kmIn !== null && remoteRec.kmIn !== '') ? remoteRec.kmIn : null,
         kmOut: (remoteRec.kmOut !== undefined && remoteRec.kmOut !== null && remoteRec.kmOut !== '') ? remoteRec.kmOut : null,
-        note: remoteRec.note || ''
+        note: remoteRec.note || '',
+        photoLink: remoteRec.photoLink || (localRec ? localRec.photoLink : '')
       };
 
       if (!localRec || JSON.stringify(localRec) !== JSON.stringify(freshRec)) {
@@ -944,6 +945,15 @@ async function handleConfirmAndSave() {
     AppState.monthData[targetDayIndex].kmOut = kmNum;
   }
 
+  // Tạo chuỗi ảnh Base64 nén nhẹ (~150KB - 250KB) để gửi lên Google Drive
+  let imageBase64 = '';
+  try {
+    // Nén chất lượng JPEG 0.78 vừa nét căng vừa upload siêu tốc
+    imageBase64 = canvas.toDataURL('image/jpeg', 0.78);
+  } catch (err) {
+    console.warn('Không thể chuyển canvas sang base64:', err);
+  }
+
   saveMonthData();
   closeConfirmationModal();
 
@@ -956,16 +966,17 @@ async function handleConfirmAndSave() {
     type: mode,
     time: time,
     km: kmNum,
+    imageBase64: imageBase64,
     timestamp: Date.now()
   };
 
   enqueueOfflineRecord(syncRecordItem);
 
   if (navigator.onLine && AppState.scriptUrl) {
-    showToast('Đang tải lên Google Sheets...', 'info');
+    showToast('☁️ Đang tải dữ liệu & ảnh lên Google Drive...', 'info');
     processOfflineSyncQueue().then(() => fetchLiveDataFromSheets(true));
   } else {
-    showToast('💾 Đã lưu ảnh vào máy & ghi nhận Offline (sẽ tự động lên Sheets khi có mạng)!', 'success');
+    showToast('💾 Đã lưu ảnh vào máy & hàng chờ (sẽ tự động lên Drive & Sheets khi có mạng)!', 'success');
   }
 
   setTimeout(() => {
@@ -1039,6 +1050,7 @@ function renderTimesheetTable() {
     const kmIn = (record.kmIn !== undefined && record.kmIn !== null && record.kmIn !== '') ? record.kmIn : '';
     const kmOut = (record.kmOut !== undefined && record.kmOut !== null && record.kmOut !== '') ? record.kmOut : '';
     const note = record.note || '';
+    const photoLink = record.photoLink || '';
 
     let label = record.label;
     if (!label) {
@@ -1060,7 +1072,22 @@ function renderTimesheetTable() {
 
     const isToday = (idx === currentDay);
     const isShift2Row = (idx > 31);
-    const hasData = Boolean(checkIn || checkOut || kmIn || kmOut || note);
+    const hasData = Boolean(checkIn || checkOut || kmIn || kmOut || note || photoLink);
+
+    // Format link ảnh hiển thị dạng nút bấm mở xem trực tiếp
+    let photoHtml = '<span style="color:#64748b;font-size:11px;">--</span>';
+    if (photoLink) {
+      const links = photoLink.split('\n').filter(Boolean);
+      photoHtml = links.map(line => {
+        const parts = line.split(': http');
+        if (parts.length > 1) {
+          const title = parts[0];
+          const url = 'http' + parts[1];
+          return `<a href="${url}" target="_blank" class="table-photo-link" title="Xem ảnh"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${title}</a>`;
+        }
+        return `<a href="${line}" target="_blank" class="table-photo-link"><i class="fa-solid fa-image"></i> Xem ảnh</a>`;
+      }).join('<br>');
+    }
 
     rowsHtml += `
       <tr class="${isToday ? 'today-row' : ''} ${hasData ? 'filled-row' : ''} ${isShift2Row ? 'shift2-row' : ''}" id="row-day-${idx}">
@@ -1071,7 +1098,8 @@ function renderTimesheetTable() {
         <td>${kmOut !== '' ? Number(kmOut).toLocaleString() : ''}</td>
         <td style="font-weight:600; color: ${duration !== '00:00:00' ? '#38bdf8' : 'inherit'}">${duration}</td>
         <td style="font-weight:600; color: ${kmDiff > 0 ? '#34d399' : 'inherit'}">${kmDiff}</td>
-        <td style="text-align:left; font-size:12px; color:#cbd5e1; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${note}</td>
+        <td style="text-align:left; font-size:12px; color:#cbd5e1; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${note}</td>
+        <td style="text-align:left; font-size:11px; white-space:nowrap;">${photoHtml}</td>
         <td class="col-act">
           <button onclick="openEditModal(${idx})" title="Sửa hàng này">
             <i class="fa-solid fa-pen-to-square"></i>

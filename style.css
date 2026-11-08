@@ -744,6 +744,26 @@ body {
   font-weight: 800;
 }
 
+.table-photo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #38bdf8;
+  text-decoration: none;
+  font-weight: 600;
+  padding: 3px 6px;
+  background: rgba(56, 189, 248, 0.1);
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  transition: all 0.2s;
+  margin: 1px 0;
+}
+
+.table-photo-link:hover {
+  background: rgba(56, 189, 248, 0.25);
+  color: #ffffff;
+}
+
 /* Prominent Km Input Section */
 .km-input-section {
   background: linear-gradient(145deg, #1e293b, #243048);
