@@ -21,13 +21,21 @@
         <div class="app-logo">
           <i class="fa-solid fa-business-time"></i>
         </div>
-        <div>
+        <div class="header-info">
           <h1 class="app-title">Chấm Công & Km</h1>
-          <p class="app-subtitle" id="currentDateDisplay">Đang tải ngày...</p>
+          <div class="header-datetime">
+            <span class="header-date" id="currentDateDisplay">Đang tải ngày...</span>
+            <span class="header-time-sep">•</span>
+            <span class="header-live-time" id="headerLiveClock">00:00:00</span>
+          </div>
         </div>
       </div>
       <div class="header-right">
-        <!-- Network & Sync Status Pill -->
+        <!-- Live Online/Offline Pill -->
+        <div class="online-status-badge" id="onlineStatusBadge">
+          <span class="status-dot"></span> <span id="onlineStatusText">Trực tuyến</span>
+        </div>
+        <!-- Sync Status Pill -->
         <button id="btnSyncQueue" class="sync-status-pill online" title="Nhấn để đồng bộ thủ công">
           <span class="status-indicator-dot"></span>
           <span id="syncStatusText">Đã đồng bộ</span>
@@ -39,84 +47,9 @@
       </div>
     </header>
 
-    <!-- Main Navigation Tabs -->
-    <nav class="nav-tabs">
-      <button class="tab-btn active" data-tab="tab-checkin">
-        <i class="fa-solid fa-camera"></i>
-        <span>Chụp Check-in</span>
-      </button>
-      <button class="tab-btn" data-tab="tab-timesheet">
-        <i class="fa-solid fa-table-list"></i>
-        <span>Bảng Chấm Công</span>
-      </button>
-      <button class="tab-btn" data-tab="tab-year-summary">
-        <i class="fa-solid fa-calendar-days"></i>
-        <span>Cả Năm</span>
-      </button>
-    </nav>
-
     <!-- TAB 1: CAMERA & CHECK-IN/OUT -->
     <main id="tab-checkin" class="tab-content active">
-      <!-- Realtime Clock & Status Card -->
-      <section class="status-card">
-        <div class="clock-display">
-          <div class="live-time" id="liveClock">00:00:00</div>
-          <div class="live-badge" id="onlineStatusBadge">
-            <span class="status-dot"></span> Trực tuyến
-          </div>
-        </div>
-        
-        <!-- Today Shift Status -->
-        <div class="today-summary" id="todaySummaryCard">
-          <div class="summary-item">
-            <span class="label" id="todayCheckInLabel">Check in (Đến):</span>
-            <strong class="value" id="todayCheckInTime">--:--:--</strong>
-            <span class="sub-value" id="todayKmIn">Km: ---</span>
-          </div>
-          <div class="summary-divider"></div>
-          <div class="summary-item">
-            <span class="label" id="todayCheckOutLabel">Check out (Về):</span>
-            <strong class="value" id="todayCheckOutTime">--:--:--</strong>
-            <span class="sub-value" id="todayKmOut">Km: ---</span>
-          </div>
-        </div>
-
-        <!-- Shift Selector (Ca 1 / Ca 2) -->
-        <div class="shift-switch-bar">
-          <span class="shift-switch-label"><i class="fa-solid fa-business-time"></i> Ca làm việc:</span>
-          <div class="shift-toggle-group">
-            <button type="button" class="shift-btn active" id="btnShift1" data-shift="1">Ca 1</button>
-            <button type="button" class="shift-btn" id="btnShift2" data-shift="2">Ca 2</button>
-          </div>
-        </div>
-
-        <div class="shift-action-indicator" id="actionIndicator">
-          <i class="fa-solid fa-circle-info"></i>
-          <span id="actionIndicatorText">Chưa check-in. Bấm nút bên dưới để chụp giờ vào ca.</span>
-        </div>
-      </section>
-
-      <!-- Action Mode Selector (In or Out) -->
-      <section class="mode-selector">
-        <label class="mode-radio">
-          <input type="radio" name="checkMode" value="in" id="modeRadioIn" checked>
-          <span class="radio-card in-card">
-            <i class="fa-solid fa-right-to-bracket"></i>
-            <span class="mode-title">Vào Ca (Check-in)</span>
-            <span class="mode-desc">Ghi giờ đến & Km đầu</span>
-          </span>
-        </label>
-        <label class="mode-radio">
-          <input type="radio" name="checkMode" value="out" id="modeRadioOut">
-          <span class="radio-card out-card">
-            <i class="fa-solid fa-right-from-bracket"></i>
-            <span class="mode-title">Tan Ca (Check-out)</span>
-            <span class="mode-desc">Ghi giờ về & Km sau</span>
-          </span>
-        </label>
-      </section>
-
-      <!-- Camera Capture Box -->
+      <!-- 1. CAMERA SECTION (TRÊN CÙNG ƯU TIÊN SỐ 1) -->
       <section class="camera-section">
         <div class="camera-container" id="cameraContainer">
           <video id="cameraVideo" autoplay playsinline muted></video>
@@ -148,6 +81,62 @@
             <i class="fa-solid fa-images"></i>
           </label>
           <input type="file" id="fileFallbackInput" accept="image/*" capture="environment" style="display: none;">
+        </div>
+      </section>
+
+      <!-- 2. LIVE WATERMARK BADGE PREVIEW (NGAY DƯỚI NÚT CHỤP) -->
+      <section class="live-watermark-card" id="liveWatermarkBadge">
+        <div class="live-badge-header">
+          <span class="badge-tag in" id="liveBadgeTag">🟢 CHECK IN (GIỜ VÀO LÀM)</span>
+          <span class="badge-shift-pill" id="liveBadgeShift">Ca 1</span>
+        </div>
+        <div class="live-badge-datetime">
+          <span class="badge-time" id="liveBadgeTime">🕒 00:00:00</span>
+          <span class="badge-date" id="liveBadgeDate">📅 08/11/2026</span>
+        </div>
+        <div class="live-badge-row">
+          <i class="fa-solid fa-gauge-high"></i>
+          <span id="liveBadgeKm">🚗 ODO: Sẵn sàng chụp Km</span>
+        </div>
+        <div class="live-badge-row location-row">
+          <i class="fa-solid fa-location-dot"></i>
+          <span id="liveBadgeLocation">📍 Đang dò vị trí...</span>
+        </div>
+      </section>
+
+      <!-- 3. GỌN GÀNG: THANH CHỌN CA & CHỌN CHẾ ĐỘ -->
+      <section class="compact-shift-control">
+        <!-- Chuyển Ca 1 / Ca 2 -->
+        <div class="shift-switch-bar">
+          <span class="shift-switch-label"><i class="fa-solid fa-business-time"></i> Ca làm việc:</span>
+          <div class="shift-toggle-group">
+            <button type="button" class="shift-btn active" id="btnShift1" data-shift="1">Ca 1</button>
+            <button type="button" class="shift-btn" id="btnShift2" data-shift="2">Ca 2</button>
+          </div>
+        </div>
+
+        <!-- Chọn Chế Độ Vào / Tan Ca -->
+        <div class="mode-selector compact">
+          <label class="mode-radio">
+            <input type="radio" name="checkMode" value="in" id="modeRadioIn" checked>
+            <span class="radio-card in-card">
+              <i class="fa-solid fa-right-to-bracket"></i>
+              <span class="mode-title">Vào Ca (Check-in)</span>
+            </span>
+          </label>
+          <label class="mode-radio">
+            <input type="radio" name="checkMode" value="out" id="modeRadioOut">
+            <span class="radio-card out-card">
+              <i class="fa-solid fa-right-from-bracket"></i>
+              <span class="mode-title">Tan Ca (Check-out)</span>
+            </span>
+          </label>
+        </div>
+
+        <!-- Gợi ý hành động thông minh -->
+        <div class="shift-action-indicator" id="actionIndicator">
+          <i class="fa-solid fa-circle-info"></i>
+          <span id="actionIndicatorText">Sẵn sàng chụp. Bấm nút camera để ghi nhận ca làm.</span>
         </div>
       </section>
     </main>
@@ -429,8 +418,24 @@
 
     <!-- Notification Toast -->
     <div class="toast-container" id="toastContainer"></div>
+
+    <!-- BOTTOM NAVIGATION BAR (CHUYỂN XUỐNG DƯỚI CÙNG TRỰC QUAN NHƯ APP NATIVE) -->
+    <nav class="bottom-nav-bar">
+      <button class="bottom-nav-item active" data-tab="tab-checkin">
+        <i class="fa-solid fa-camera"></i>
+        <span>Chụp Check-in</span>
+      </button>
+      <button class="bottom-nav-item" data-tab="tab-timesheet">
+        <i class="fa-solid fa-table-list"></i>
+        <span>Bảng Chấm Công</span>
+      </button>
+      <button class="bottom-nav-item" data-tab="tab-year-summary">
+        <i class="fa-solid fa-calendar-days"></i>
+        <span>Cả Năm</span>
+      </button>
+    </nav>
   </div>
 
-  <script src="app.js?v=38"></script>
+  <script src="app.js?v=39"></script>
 </body>
 </html>

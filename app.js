@@ -54,17 +54,21 @@ const USER_SAMPLE_DATA = {
 
 // --- DOM Elements ---
 const elements = {
-  liveClock: document.getElementById('liveClock'),
+  headerLiveClock: document.getElementById('headerLiveClock'),
   currentDateDisplay: document.getElementById('currentDateDisplay'),
   onlineStatusBadge: document.getElementById('onlineStatusBadge'),
+  onlineStatusText: document.getElementById('onlineStatusText'),
   btnSyncQueue: document.getElementById('btnSyncQueue'),
   syncStatusText: document.getElementById('syncStatusText'),
   syncQueueBadge: document.getElementById('syncQueueBadge'),
-  todaySummaryCard: document.getElementById('todaySummaryCard'),
-  todayCheckInTime: document.getElementById('todayCheckInTime'),
-  todayKmIn: document.getElementById('todayKmIn'),
-  todayCheckOutTime: document.getElementById('todayCheckOutTime'),
-  todayKmOut: document.getElementById('todayKmOut'),
+  // Live Watermark Badge Elements
+  liveWatermarkBadge: document.getElementById('liveWatermarkBadge'),
+  liveBadgeTag: document.getElementById('liveBadgeTag'),
+  liveBadgeShift: document.getElementById('liveBadgeShift'),
+  liveBadgeTime: document.getElementById('liveBadgeTime'),
+  liveBadgeDate: document.getElementById('liveBadgeDate'),
+  liveBadgeKm: document.getElementById('liveBadgeKm'),
+  liveBadgeLocation: document.getElementById('liveBadgeLocation'),
   btnShift1: document.getElementById('btnShift1'),
   btnShift2: document.getElementById('btnShift2'),
   actionIndicatorText: document.getElementById('actionIndicatorText'),
@@ -92,8 +96,8 @@ const elements = {
   btnConfirmSave: document.getElementById('btnConfirmSave'),
   btnRetake: document.getElementById('btnRetake'),
   btnCancelModal: document.getElementById('btnCancelModal'),
-  // Tab & Table
-  tabButtons: document.querySelectorAll('.tab-btn'),
+  // Tab & Table (Hỗ trợ cả bottom-nav-item)
+  tabButtons: document.querySelectorAll('.bottom-nav-item, .tab-btn'),
   tabContents: document.querySelectorAll('.tab-content'),
   currentMonthDisplay: document.getElementById('currentMonthDisplay'),
   monthSelectDropdown: document.getElementById('monthSelectDropdown'),
@@ -277,7 +281,14 @@ function initLiveClock() {
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
     const seconds = String(now.getSeconds()).padStart(2, '0');
-    elements.liveClock.textContent = `${hours}:${minutes}:${seconds}`;
+    const timeStr = `${hours}:${minutes}:${seconds}`;
+
+    if (elements.headerLiveClock) {
+      elements.headerLiveClock.textContent = timeStr;
+    }
+    if (elements.liveBadgeTime) {
+      elements.liveBadgeTime.textContent = `🕒 ${timeStr}`;
+    }
 
     const days = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
     const dayOfWeek = days[now.getDay()];
@@ -285,7 +296,12 @@ function initLiveClock() {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = now.getFullYear();
 
-    elements.currentDateDisplay.textContent = `${dayOfWeek}, ${day}/${month}/${year}`;
+    if (elements.currentDateDisplay) {
+      elements.currentDateDisplay.textContent = `${dayOfWeek}, ${day}/${month}/${year}`;
+    }
+    if (elements.liveBadgeDate) {
+      elements.liveBadgeDate.textContent = `📅 ${day}/${month}/${year}`;
+    }
   };
   updateClock();
   setInterval(updateClock, 1000);
@@ -440,23 +456,35 @@ function updateSyncStatusUI() {
     elements.btnSyncQueue.className = 'sync-status-pill syncing';
     elements.syncStatusText.textContent = 'Đang đồng bộ...';
     elements.syncQueueBadge.style.display = 'none';
-    elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#38bdf8"></span> Đang đồng bộ';
+    if (elements.onlineStatusBadge) {
+      elements.onlineStatusBadge.className = 'online-status-badge';
+      elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#38bdf8"></span> Đang đồng bộ';
+    }
     return;
   }
 
   if (!isOnline) {
     elements.btnSyncQueue.className = 'sync-status-pill offline';
     elements.syncStatusText.textContent = queueLen > 0 ? 'Offline (chờ mạng)' : 'Offline';
-    elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#ef4444"></span> Ngoại tuyến';
+    if (elements.onlineStatusBadge) {
+      elements.onlineStatusBadge.className = 'online-status-badge offline';
+      elements.onlineStatusBadge.innerHTML = '<span class="status-dot"></span> Ngoại tuyến';
+    }
   } else {
     if (queueLen > 0) {
       elements.btnSyncQueue.className = 'sync-status-pill offline';
       elements.syncStatusText.textContent = 'Chờ tải lên';
-      elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#f59e0b"></span> Có bản ghi chờ';
+      if (elements.onlineStatusBadge) {
+        elements.onlineStatusBadge.className = 'online-status-badge';
+        elements.onlineStatusBadge.innerHTML = '<span class="status-dot" style="background:#f59e0b"></span> Có bản ghi chờ';
+      }
     } else {
       elements.btnSyncQueue.className = 'sync-status-pill online';
       elements.syncStatusText.textContent = 'Đã đồng bộ';
-      elements.onlineStatusBadge.innerHTML = '<span class="status-dot"></span> Trực tuyến';
+      if (elements.onlineStatusBadge) {
+        elements.onlineStatusBadge.className = 'online-status-badge';
+        elements.onlineStatusBadge.innerHTML = '<span class="status-dot"></span> Trực tuyến';
+      }
     }
   }
 
@@ -609,22 +637,61 @@ function updateTodayShiftStatus() {
   const currentRec = isShift2 ? rec2 : rec1;
   const shiftTitle = isShift2 ? 'Ca 2' : 'Ca 1';
 
-  elements.todayCheckInTime.textContent = currentRec.checkIn || '--:--:--';
-  elements.todayKmIn.textContent = currentRec.kmIn ? `Km: ${Number(currentRec.kmIn).toLocaleString()}` : 'Km: ---';
-  elements.todayCheckOutTime.textContent = currentRec.checkOut || '--:--:--';
-  elements.todayKmOut.textContent = currentRec.kmOut ? `Km: ${Number(currentRec.kmOut).toLocaleString()}` : 'Km: ---';
+  let currentMode = elements.modeRadioIn && elements.modeRadioIn.checked ? 'in' : 'out';
 
   if (!currentRec.checkIn) {
-    elements.modeRadioIn.checked = true;
+    if (elements.modeRadioIn) elements.modeRadioIn.checked = true;
+    currentMode = 'in';
     elements.btnCaptureLabel.textContent = `Chụp Check-in (${shiftTitle})`;
     elements.actionIndicatorText.textContent = `Hôm nay (Ngày ${today}) chưa check-in ${shiftTitle}. Bấm nút để chụp giờ vào ca & Km đầu.`;
   } else if (currentRec.checkIn && !currentRec.checkOut) {
-    elements.modeRadioOut.checked = true;
+    if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
+    currentMode = 'out';
     elements.btnCaptureLabel.textContent = `Chụp Check-out (${shiftTitle})`;
     elements.actionIndicatorText.textContent = `Đã vào ${shiftTitle} lúc ${currentRec.checkIn} (Km: ${currentRec.kmIn ? Number(currentRec.kmIn).toLocaleString() : '---'}). Bấm nút để chụp Tan ca & Km sau.`;
   } else {
-    elements.modeRadioOut.checked = true;
+    if (elements.modeRadioOut) elements.modeRadioOut.checked = true;
+    currentMode = 'out';
     elements.btnCaptureLabel.textContent = `Chụp Cập Nhật (${shiftTitle})`;
+    elements.actionIndicatorText.textContent = `Đã hoàn thành ${shiftTitle} hôm nay (Vào: ${currentRec.checkIn} | Về: ${currentRec.checkOut}).`;
+  }
+
+  // Cập nhật Live Watermark Badge dưới nút chụp
+  updateLiveWatermarkBadgeUI(currentMode, isShift2, currentRec);
+}
+
+function updateLiveWatermarkBadgeUI(mode, isShift2, record = {}) {
+  if (!elements.liveWatermarkBadge) return;
+  const isOut = (mode === 'out');
+  elements.liveWatermarkBadge.classList.toggle('out', isOut);
+
+  if (elements.liveBadgeTag) {
+    elements.liveBadgeTag.className = `badge-tag ${isOut ? 'out' : 'in'}`;
+    elements.liveBadgeTag.textContent = isOut
+      ? (isShift2 ? '🟠 CHECK OUT CA 2 (GIỜ TAN CA)' : '🟠 CHECK OUT (GIỜ TAN CA)')
+      : (isShift2 ? '🟢 CHECK IN CA 2 (GIỜ VÀO LÀM)' : '🟢 CHECK IN (GIỜ VÀO LÀM)');
+  }
+
+  if (elements.liveBadgeShift) {
+    elements.liveBadgeShift.textContent = isShift2 ? 'Ca 2' : 'Ca 1';
+  }
+
+  if (elements.liveBadgeKm) {
+    if (isOut && record.kmIn) {
+      elements.liveBadgeKm.textContent = `🚗 ODO vào: ${Number(record.kmIn).toLocaleString()} KM (Chờ chụp lúc về)`;
+    } else if (record.kmIn || record.kmOut) {
+      const lastKm = record.kmOut || record.kmIn;
+      elements.liveBadgeKm.textContent = `🚗 ODO gần nhất: ${Number(lastKm).toLocaleString()} KM`;
+    } else {
+      elements.liveBadgeKm.textContent = `🚗 ODO: Nhập công tơ mét sau khi chụp`;
+    }
+  }
+
+  if (elements.liveBadgeLocation) {
+    const locStr = getCurrentLocationString();
+    elements.liveBadgeLocation.textContent = locStr || '📍 Đang lấy vị trí GPS...';
+  }
+}
     elements.actionIndicatorText.textContent = `Đã hoàn thành ${shiftTitle} hôm nay (Vào: ${currentRec.checkIn} | Về: ${currentRec.checkOut}).`;
   }
 }
@@ -1399,10 +1466,12 @@ function setupEventListeners() {
   elements.modeRadioIn.addEventListener('change', () => {
     const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
     elements.btnCaptureLabel.textContent = `Chụp Check-in Giờ Vào${shiftTitle}`;
+    updateTodayShiftStatus();
   });
   elements.modeRadioOut.addEventListener('change', () => {
     const shiftTitle = (AppState.activeShift === 2) ? ' (Ca 2)' : '';
     elements.btnCaptureLabel.textContent = `Chụp Check-out Tan Ca${shiftTitle}`;
+    updateTodayShiftStatus();
   });
 
   if (elements.btnShift1) {
