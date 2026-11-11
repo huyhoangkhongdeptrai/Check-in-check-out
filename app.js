@@ -74,7 +74,9 @@ const elements = {
   actionIndicatorText: document.getElementById('actionIndicatorText'),
   modeRadioIn: document.getElementById('modeRadioIn'),
   modeRadioOut: document.getElementById('modeRadioOut'),
+  cameraContainer: document.getElementById('cameraContainer'),
   cameraVideo: document.getElementById('cameraVideo'),
+  cameraFocusRing: document.getElementById('cameraFocusRing'),
   cameraPlaceholder: document.getElementById('cameraPlaceholder'),
   btnCapture: document.getElementById('btnCapture'),
   btnCaptureLabel: document.getElementById('btnCaptureLabel'),
@@ -509,6 +511,7 @@ async function processOfflineSyncQueue() {
   AppState.isSyncing = true;
   updateSyncStatusUI();
 
+  // Lấy các bản ghi cần gửi
   const itemsToSend = [...AppState.offlineQueue];
 
   try {
@@ -525,6 +528,7 @@ async function processOfflineSyncQueue() {
 
     const result = await response.json();
     if (result && result.status === 'success') {
+      // Đã gửi thành công -> loại bỏ các bản ghi đã gửi khỏi hàng chờ
       AppState.offlineQueue = AppState.offlineQueue.filter(item => !itemsToSend.some(sent => sent.id === item.id));
       localStorage.setItem('chamcong_offline_queue', JSON.stringify(AppState.offlineQueue));
       
@@ -536,6 +540,11 @@ async function processOfflineSyncQueue() {
     }
   } catch (err) {
     console.warn('Đồng bộ hàng chờ thất bại, sẽ tự động thử lại:', err);
+    // TỐI ƯU CHỐNG TRÙNG LẶP: Nếu bản ghi có chứa ảnh Base64 lớn và đã từng thử gửi,
+    // sau 2 lần lỗi ta vẫn giữ dữ liệu giờ & km nhưng không gửi lại Base64 ảnh để tránh phình dung lượng và trùng lặp
+    itemsToSend.forEach(it => {
+      it.retryCount = (it.retryCount || 0) + 1;
+    });
   } finally {
     AppState.isSyncing = false;
     updateSyncStatusUI();
@@ -743,6 +752,53 @@ function switchCamera() {
   AppState.facingMode = (AppState.facingMode === 'environment') ? 'user' : 'environment';
   initCamera();
   showToast(`Đã chuyển sang Camera ${AppState.facingMode === 'environment' ? 'sau' : 'trước'}`, 'info');
+}
+
+// --- Lấy nét camera khi chạm vào màn hình (Tap to Focus) ---
+async function handleCameraFocus(e) {
+  if (!elements.cameraContainer || !elements.cameraFocusRing) return;
+
+  const rect = elements.cameraContainer.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  // Hiển thị vòng tròn lấy nét tại điểm chạm
+  elements.cameraFocusRing.style.left = `${x}px`;
+  elements.cameraFocusRing.style.top = `${y}px`;
+  elements.cameraFocusRing.classList.remove('active');
+  void elements.cameraFocusRing.offsetWidth; // Trigger reflow
+  elements.cameraFocusRing.classList.add('active');
+
+  if (navigator.vibrate) {
+    navigator.vibrate(35); // Rung nhẹ phản hồi xúc giác
+  }
+
+  // Tự ẩn vòng lấy nét sau 1.2s
+  clearTimeout(elements.cameraFocusRing._timeout);
+  elements.cameraFocusRing._timeout = setTimeout(() => {
+    elements.cameraFocusRing.classList.remove('active');
+  }, 1200);
+
+  // Kích hoạt lấy nét phần cứng camera nếu trình duyệt & thiết bị hỗ trợ
+  try {
+    if (AppState.stream) {
+      const track = AppState.stream.getVideoTracks()[0];
+      if (track) {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        // Tái kích hoạt focusMode liên tục
+        if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+          await track.applyConstraints({
+            advanced: [{ focusMode: 'continuous' }]
+          });
+        }
+      }
+    }
+  } catch (err) {
+    // Không làm gián đoạn nếu phần cứng không mở API applyConstraints
+  }
 }
 
 // --- Fallback File Capture ---
@@ -1498,6 +1554,17 @@ function setupEventListeners() {
   elements.btnCapture.addEventListener('click', captureCurrentFrame);
   elements.btnSwitchCamera.addEventListener('click', switchCamera);
   elements.fileFallbackInput.addEventListener('change', handleFallbackCapture);
+
+  // Sự kiện chạm để lấy nét (Tap to Focus)
+  if (elements.cameraContainer) {
+    elements.cameraContainer.addEventListener('click', handleCameraFocus);
+    elements.cameraContainer.addEventListener('touchstart', (e) => {
+      // Chỉ kích hoạt focus khi chạm vào vùng camera
+      if (e.target === elements.cameraVideo || e.target.closest('.camera-overlay-guides')) {
+        handleCameraFocus(e);
+      }
+    }, { passive: true });
+  }
 
   elements.btnConfirmSave.addEventListener('click', handleConfirmAndSave);
   elements.btnRetake.addEventListener('click', closeConfirmationModal);

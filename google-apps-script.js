@@ -305,7 +305,7 @@ function saveImageToDrive(base64Data, info) {
 }
 
 /**
- * NỐI LINK ẢNH VÀO CỘT I CỦA DÒNG TƯƠNG ỨNG
+ * NỐI HOẶC CẬP NHẬT LINK ẢNH VÀO CỘT I (CHỐNG TRÙNG LẶP TUYỆT ĐỐI)
  */
 function appendImageLinkToCell(sheet, row, type, time, url, shift) {
   var cell = sheet.getRange(row, 9);
@@ -315,26 +315,55 @@ function appendImageLinkToCell(sheet, row, type, time, url, shift) {
 
   if (currentText === "") {
     cell.setValue(newEntry);
-  } else if (currentText.indexOf(url) === -1) {
-    cell.setValue(currentText + "\n" + newEntry);
+    return;
   }
+
+  // Tách từng dòng link đã có để kiểm tra trùng
+  var lines = currentText.split("\n");
+  var updated = false;
+  var newLines = [];
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line) continue;
+
+    // Nếu dòng này cùng loại (Check-in hoặc Check-out) và cùng mốc giờ -> Cập nhật link mới nhất thay vì nối thêm
+    if (line.indexOf(tag + " (" + time + ")") !== -1 || line.indexOf(url) !== -1) {
+      newLines.push(newEntry);
+      updated = true;
+    } else {
+      newLines.push(line);
+    }
+  }
+
+  if (!updated) {
+    newLines.push(newEntry);
+  }
+
+  cell.setValue(newLines.join("\n"));
 }
 
 /**
- * TÌM SHEET THÁNG THÔNG MINH
+ * TÌM SHEET THÁNG CHÍNH XÁC (KHÔNG BAO GIỜ LẤY NHẦM THÁNG KHÁC)
  */
 function findMonthSheet(ss, year, month) {
-  var m2 = (month < 10 ? "0" + month : "" + month);
-  var m1 = "" + month;
+  var m = parseInt(month, 10);
+  var y = parseInt(year, 10);
+  var m2 = (m < 10 ? "0" + m : "" + m);
+  var m1 = "" + m;
+
+  // 1. Kiểm tra các tên sheet chuẩn
   var candidates = [
-    "Tháng " + m2 + "-" + year,
-    "Tháng " + m1 + "-" + year,
-    "Tháng " + m2 + "/" + year,
-    "Tháng " + m1 + "/" + year,
+    "Tháng " + m2 + "-" + y,
+    "Tháng " + m1 + "-" + y,
+    "Tháng " + m2 + "/" + y,
+    "Tháng " + m1 + "/" + y,
+    "Thang " + m2 + "-" + y,
+    "Thang " + m1 + "-" + y,
+    "Thang " + m2 + "/" + y,
+    "Thang " + m1 + "/" + y,
     "Tháng " + m2,
     "Tháng " + m1,
-    "Thang " + m2 + "-" + year,
-    "Thang " + m1 + "-" + year,
     "Thang " + m2,
     "Thang " + m1
   ];
@@ -344,22 +373,26 @@ function findMonthSheet(ss, year, month) {
     if (sh) return sh;
   }
 
+  // 2. Tìm duyệt tên sheet bằng Regex chính xác theo số tháng
   var allSheets = ss.getSheets();
+  var regexMonth = new RegExp("(tháng|thang)\\s*0?" + m + "(\\D|$)", "i");
+
   for (var j = 0; j < allSheets.length; j++) {
     var name = allSheets[j].getName().trim();
-    if (name.indexOf("Tổng Hợp") === -1 && name.indexOf("Tong Hop") === -1) {
-      if (name.indexOf(m1) !== -1 || name.indexOf(m2) !== -1) {
-        return allSheets[j];
+    if (name.indexOf("Tổng Hợp") !== -1 || name.indexOf("Tong Hop") !== -1) {
+      continue;
+    }
+    if (regexMonth.test(name)) {
+      // Nếu trong tên sheet có cả năm thì phải khớp đúng năm
+      var yearMatch = name.match(/20\d\d/);
+      if (yearMatch && parseInt(yearMatch[0], 10) !== y) {
+        continue;
       }
+      return allSheets[j];
     }
   }
 
-  for (var k = 0; k < allSheets.length; k++) {
-    var sName = allSheets[k].getName().trim();
-    if (sName.indexOf("Tổng Hợp") === -1 && sName.indexOf("Tong Hop") === -1) {
-      return allSheets[k];
-    }
-  }
+  // TUYỆT ĐỐI KHÔNG fallback trả về bừa bãi sheet khác! Nếu chưa có sheet tháng đó thì trả về null
   return null;
 }
 

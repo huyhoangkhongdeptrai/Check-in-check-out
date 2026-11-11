@@ -688,6 +688,39 @@ body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  cursor: crosshair;
+}
+
+/* Hiệu ứng vòng tròn lấy nét (Focus Ring) như camera Native */
+.camera-focus-ring {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  border: 2px solid #38bdf8;
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8), inset 0 0 8px rgba(56, 189, 248, 0.4);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(1.4);
+  transition: opacity 0.2s ease, transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  z-index: 15;
+}
+
+.camera-focus-ring.active {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.camera-focus-ring::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  background-color: #38bdf8;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .camera-placeholder {
